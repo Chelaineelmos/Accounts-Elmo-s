@@ -2733,7 +2733,9 @@ function hpCalc(rec){
     const dayLen = rec.normalTimeDue/5;                      // a standard day of the week's normal hours
     const days = dayLen>0 ? rec.actualHours/dayLen : 0;      // days worked that week
     const pay = rules.tempDays>0 ? (days/rules.tempDays)*rules.tempDayHours*rec.rate : 0;
-    return { type, days, pay: Math.round(pay*100)/100, rules };
+    const potDays = Math.max(5, days);                        // a full 5-day week
+    const potPay = rules.tempDays>0 ? (potDays/rules.tempDays)*rules.tempDayHours*rec.rate : 0;
+    return { type, days, pay: Math.round(pay*100)/100, potPay: Math.round(potPay*100)/100, rules };
   }
   const inc = hpIncludedLeave(rec, rules);
   const grossLostH = Math.max(0, rec.normalTimeDue - rec.actualHours);   // hours short worked
@@ -2741,7 +2743,10 @@ function hpCalc(rec){
   const netLostMin = Math.round(Math.max(0, grossLostH - offsetH)*60);
   const pct = netLostMin<=rules.t1Min ? rules.t1Pct : (netLostMin<=rules.t2Min ? rules.t2Pct : rules.t3Pct);
   const pay = (pct/100) * (rec.actualHours + offsetH) * Math.min(rec.rate, rules.rateCap);
-  return { type, pct, pay: Math.round(pay*100)/100, grossLostH, offsetH, inc, netLostMin, rules };
+  // What the week would have paid with no time lost: the top % on the full week's hours
+  const potHours = Math.max(rec.normalTimeDue, rec.actualHours + offsetH);
+  const potPay = (rules.t1Pct/100) * potHours * Math.min(rec.rate, rules.rateCap);
+  return { type, pct, pay: Math.round(pay*100)/100, potPay: Math.round(potPay*100)/100, grossLostH, offsetH, inc, netLostMin, rules };
 }
 
 function renderHolidayPay(){
@@ -2925,6 +2930,8 @@ function printHolidayPayReport(empNo){
   const tempItems = calcs.filter(x=>x.c.type==='temporary');
   const permItems = calcs.filter(x=>x.c.type==='permanent');
   const yearTotal = calcs.reduce((t,x)=>t+x.c.pay,0);
+  const couldHave = calcs.reduce((t,x)=>t+Math.max(x.c.potPay,x.c.pay),0);   // if no time had been lost in any week
+  const lostAbsent = Math.max(0, couldHave - yearTotal);
 
   const logoImg = document.querySelector('header img');
   const logoSrc = logoImg ? logoImg.src : '';
@@ -3001,6 +3008,10 @@ function printHolidayPayReport(empNo){
       </div>
       ${sectionsHtml}
       <div class="hp-grand-total">Holiday Pay Total: ${fmt2(yearTotal)}</div>
+      ${recs.length ? `<table class="hp-table" style="width:auto;margin:14px 0 0 auto;min-width:340px">
+        <tr><td>Could have received (no time lost)</td><td class="num"><b>${fmt2(couldHave)}</b></td></tr>
+        <tr><td>Lost due to absence / time short</td><td class="num" style="color:#C8102E"><b>${fmt2(lostAbsent)}</b></td></tr>
+      </table>` : ''}
     </div>
   `;
   setTimeout(()=>window.print(), 150);
