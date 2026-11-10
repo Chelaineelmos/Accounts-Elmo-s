@@ -760,6 +760,16 @@ body.view-only .editor-only{display:none!important}
 </main>
 
 
+<div class="modal-bg" id="modal-hp-breakdown">
+<div class="modal" style="max-width:1180px;width:96%">
+  <div class="modal-head"><h3 id="hpb-title">Holiday pay breakdown</h3><button onclick="closeModal('modal-hp-breakdown')">✕</button></div>
+  <div class="modal-body" id="hpb-body" style="overflow-x:auto"></div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modal-hp-breakdown')">Close</button>
+    <button class="btn btn-primary" onclick="printHpBreakdown()">🖨 Print breakdown</button>
+  </div>
+</div></div>
+
 <div class="modal-bg" id="modal-hp-rules">
 <div class="modal">
   <div class="modal-head"><h3 id="hp-rule-title">New holiday pay rules</h3><button onclick="closeModal('modal-hp-rules')">✕</button></div>
@@ -2812,7 +2822,7 @@ function renderHolidayPay(){
       <td style="font-size:12px;color:var(--muted)">${r.e ? (r.e.employmentType||'—') : '—'}${pd?`<div style="font-size:10px">permanent from ${fmtDate(pd)}</div>`:''}</td>
       <td style="text-align:center">${r.weeks}</td>
       <td style="text-align:right;font-weight:700">${fmt2(r.total)}</td>
-      <td><button class="btn btn-outline btn-sm" onclick="printHolidayPayReport('${r.empNo}')">🖨 Print PDF</button></td>
+      <td style="white-space:nowrap"><button class="btn btn-outline btn-sm" onclick="openHpBreakdown('${r.empNo}',${yr})">🔍 Breakdown</button> <button class="btn btn-outline btn-sm" onclick="printHolidayPayReport('${r.empNo}')">🖨 Print PDF</button></td>
     </tr>`;
   }).join('') : '<tr><td colspan="6" class="empty"><div class="ico">🏖️</div>No holiday pay records for this holiday year yet</td></tr>';
 
@@ -2942,6 +2952,93 @@ async function deleteHpPerm(empNo){
     showToast('Date removed');
     renderHolidayPay();
   } catch(err) { showToast('Delete error: ' + err.message, false); }
+}
+
+// ── Full working-out of one employee's year, for checking the figures ──
+let hpbCurrent = null;
+function hpBreakdownInner(empNo, yr){
+  hpCache = {};
+  const recs = db.hp.filter(r=>r.empNo===empNo && hpHolidayYearFor(r.weekEnd)===yr)
+                    .sort((a,b)=>(a.weekEnd||'').localeCompare(b.weekEnd||''));
+  const items = recs.map(r=>({ r, c: hpCalc(r) }));
+  const perm = items.filter(x=>x.c.type==='permanent');
+  const temp = items.filter(x=>x.c.type==='temporary');
+  const n2 = v => Number(v).toFixed(2);
+  const th = s => `<th class="num">${s}</th>`;
+  const total = items.reduce((t,x)=>t+x.c.pay,0);
+  const could = items.reduce((t,x)=>t+Math.max(x.c.potPay,x.c.pay),0);
+  let html = '';
+  if (!items.length) return '<p class="hp-sub">No holiday pay records for this holiday year.</p>';
+
+  // rules in force (shows a change mid-year if there was one)
+  const seen = new Map();
+  items.forEach(x=>{ const k = hpRuleSummary(x.c.rules); if (!seen.has(k)) seen.set(k, x.r.weekEnd); });
+  html += `<div style="font-size:12px;margin-bottom:10px"><b>Rules used:</b> ${[...seen.entries()].map(([k,d])=>`${seen.size>1?`<i>from week ending ${fmtDate(d)}:</i> `:''}${noteEsc(k)}`).join('<br>')}</div>`;
+  const pd = hpPermDate(empNo);
+  if (pd) html += `<div style="font-size:12px;margin-bottom:10px"><b>Permanent from:</b> ${fmtDate(pd)} — earlier weeks use the temporary formula.</div>`;
+
+  if (perm.length) {
+    html += `<div class="hp-section-title">Permanent weeks</div>
+    <div style="font-size:11px;color:#555;margin-bottom:4px">Holiday pay = % × (actual hours + leave hours counted as worked) × hourly rate (capped). The % depends on the net minutes short: hours due − actual hours − leave counted as worked.</div>
+    <table class="hp-table" style="font-size:11px">
+      <thead><tr><th>Week ending</th>${th('Hours due')}${th('Actual hours')}${th('Hours short')}${th('Leave counted as worked (h)')}${th('Net short (min)')}${th('% applied')}${th('Rate / hour')}${th('Rate used')}<th>Working</th>${th('Holiday pay')}</tr></thead>
+      <tbody>${perm.map(({r,c})=>{
+        const used = Math.min(r.rate, c.rules.rateCap);
+        return `<tr><td>${fmtDate(r.weekEnd)}</td><td class="num">${n2(r.normalTimeDue)}</td><td class="num">${n2(r.actualHours)}</td><td class="num">${n2(c.grossLostH)}</td><td class="num">${n2(c.offsetH)}</td><td class="num">${c.netLostMin}</td><td class="num">${c.pct}%</td><td class="num">R ${n2(r.rate)}</td><td class="num">R ${n2(used)}${r.rate>c.rules.rateCap?' (capped)':''}</td><td style="white-space:nowrap">${c.pct}% × ${n2(r.actualHours+c.offsetH)} h × R ${n2(used)}</td><td class="num"><b>${fmt2(c.pay)}</b></td></tr>`;
+      }).join('')}</tbody>
+      <tfoot><tr class="hp-total-row"><td colspan="10">Permanent subtotal (${perm.length} weeks)</td><td class="num">${fmt2(perm.reduce((t,x)=>t+x.c.pay,0))}</td></tr></tfoot>
+    </table>`;
+  }
+  if (temp.length) {
+    html += `<div class="hp-section-title">Temporary weeks</div>
+    <div style="font-size:11px;color:#555;margin-bottom:4px">Days worked = actual hours ÷ (hours due ÷ 5). Holiday pay = days worked ÷ days-per-holiday-day × hours-per-holiday-day × hourly rate.</div>
+    <table class="hp-table" style="font-size:11px">
+      <thead><tr><th>Week ending</th>${th('Hours due')}${th('Actual hours')}${th('Days worked')}${th('Rate / hour')}<th>Working</th>${th('Holiday pay')}</tr></thead>
+      <tbody>${temp.map(({r,c})=>`<tr><td>${fmtDate(r.weekEnd)}</td><td class="num">${n2(r.normalTimeDue)}</td><td class="num">${n2(r.actualHours)}</td><td class="num">${c.days.toFixed(3)}</td><td class="num">R ${n2(r.rate)}</td><td style="white-space:nowrap">${c.days.toFixed(3)} ÷ ${c.rules.tempDays} × ${c.rules.tempDayHours} h × R ${n2(r.rate)}</td><td class="num"><b>${fmt2(c.pay)}</b></td></tr>`).join('')}</tbody>
+      <tfoot><tr class="hp-total-row"><td colspan="6">Temporary subtotal (${temp.length} weeks)</td><td class="num">${fmt2(temp.reduce((t,x)=>t+x.c.pay,0))}</td></tr></tfoot>
+    </table>`;
+  }
+
+  // sick / family leave days of the year, and which ones count as worked
+  const last = items[items.length-1].c.rules;
+  const chips = (type, n) => {
+    const ds = hpLeaveDates(empNo, type, yr);
+    return ds.length ? ds.map((d,i)=>`<span style="display:inline-block;border:1px solid ${i<n?'#9ccc9c':'#ddd'};background:${i<n?'#EAF6EA':'#fff'};border-radius:10px;padding:1px 8px;margin:2px 4px 2px 0;font-size:11px">${fmtDate(d)}${i<n?' ✓':''}</span>`).join('') : '<span style="color:#777">none</span>';
+  };
+  html += `<div class="hp-section-title">Leave days this holiday year (weekdays) — ✓ = counts as worked</div>
+    <div style="font-size:12px;margin-bottom:4px"><b>Sick leave</b> (first ${last.sickDays} count): ${chips('Sick leave', last.sickDays)}</div>
+    <div style="font-size:12px"><b>Family responsibility</b> (first ${last.famDays} count): ${chips('Family responsibility', last.famDays)}</div>`;
+
+  html += `<table class="hp-table" style="width:auto;margin:16px 0 0 auto;min-width:360px;font-size:12px">
+      <tr><td>Holiday pay total</td><td class="num"><b>${fmt2(total)}</b></td></tr>
+      <tr><td>Could have received (top % on the full week, every week)</td><td class="num">${fmt2(could)}</td></tr>
+      <tr><td>Lost due to absence / time short</td><td class="num" style="color:#C8102E">${fmt2(Math.max(0,could-total))}</td></tr>
+    </table>`;
+  return html;
+}
+function hpBreakdownTitle(empNo, yr){
+  const e = findEmp(empNo);
+  return `${e?`${e.surname}, ${e.displayName||e.initials}`:'Employee'} (Emp No. ${empNo}) — ${hpYearLabel(yr)}`;
+}
+function openHpBreakdown(empNo, yr){
+  hpbCurrent = { empNo, yr };
+  document.getElementById('hpb-title').textContent = 'Holiday pay breakdown — ' + hpBreakdownTitle(empNo, yr);
+  document.getElementById('hpb-body').innerHTML = hpBreakdownInner(empNo, yr);
+  openModal('modal-hp-breakdown');
+}
+function printHpBreakdown(){
+  if (!hpbCurrent) return;
+  const { empNo, yr } = hpbCurrent;
+  const logoImg = document.querySelector('header img');
+  document.getElementById('hp-print').innerHTML = `
+    <style>@page{size:A4 landscape;margin:12mm}</style>
+    <div class="hp-page" style="max-width:none;padding:10px 20px">
+      <img class="hp-logo" src="${logoImg?logoImg.src:''}" alt="elmo's Furniture" style="margin-bottom:10px">
+      <div class="hp-h1">Holiday Pay Breakdown</div>
+      <div class="hp-sub">${noteEsc(hpBreakdownTitle(empNo, yr))}</div>
+      ${hpBreakdownInner(empNo, yr)}
+    </div>`;
+  setTimeout(()=>window.print(), 150);
 }
 
 // One employee's statement for one holiday year, as printable HTML.
@@ -3124,7 +3221,7 @@ function renderHpYearRows(){
     <td style="text-align:right;font-weight:700">${fmt2(r.pay)}</td>
     <td style="text-align:right">${fmt2(r.could)}</td>
     <td style="text-align:right;color:var(--red)">${fmt2(r.lost)}</td>
-    <td><button class="btn btn-outline btn-sm" onclick="printHolidayPayReport('${r.empNo}',${hprYear})">🖨 Statement</button></td>
+    <td style="white-space:nowrap"><button class="btn btn-outline btn-sm" onclick="openHpBreakdown('${r.empNo}',${hprYear})">🔍 Breakdown</button> <button class="btn btn-outline btn-sm" onclick="printHolidayPayReport('${r.empNo}',${hprYear})">🖨 Statement</button></td>
   </tr>`).join('') : '<tr><td colspan="7" class="empty"><div class="ico">🏖️</div>No holiday pay records found</td></tr>';
 }
 // Every employee's statement for the year, one per page, in a single print.
