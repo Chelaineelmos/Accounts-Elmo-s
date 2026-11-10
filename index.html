@@ -623,7 +623,7 @@ body.view-only .editor-only{display:none!important}
         <button class="btn btn-outline btn-sm editor-only" title="Import weekly payslip summary export — adds new weeks only, no duplicates" onclick="document.getElementById('fi-holidaypay').click()">⬆ Import Payslip Sheet</button>
         <span id="import-badge-holidaypay" style="font-size:11px;color:var(--muted);align-self:center;white-space:nowrap"></span>
       </div>
-      <div style="font-size:12px;color:var(--muted);margin-top:6px">Holiday year: <select id="hp-year" onchange="hpChangeYear(this.value)" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-weight:700;font-size:12px"></select> <span style="margin-left:4px">(1 Nov – 31 Oct)</span></div>
+      <div style="font-size:12px;color:var(--muted);margin-top:6px">Statement period: <select id="hp-year" onchange="hpChangeYear(this.value)" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-weight:700;font-size:12px;max-width:100%"></select> <span id="hp-year-note" style="margin-left:4px"></span></div>
     </div>
     <div style="padding:10px 18px 4px">
       <details class="hp-panel" id="hp-rules-panel">
@@ -637,7 +637,7 @@ body.view-only .editor-only{display:none!important}
       <details class="hp-panel" id="hp-perm-panel">
         <summary>📅 Temporary → Permanent dates <span id="hp-perm-count" class="hp-pc"></span></summary>
         <div class="hp-pbody">
-          <div style="font-size:12px;color:var(--muted);margin-bottom:8px">For an employee who became permanent during the year, enter the date. Weeks before it are calculated the temporary way, weeks ending on or after it the permanent way.</div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:8px">For an employee who became permanent during the year, enter the date. Weeks before it are calculated the temporary way, weeks ending on or after it the permanent way. If the date is between 1 Jan and 31 Oct, their statement runs 1 Jan – 31 Oct and is listed with the permanent staff.</div>
           <div id="hp-perm-hint" style="margin-bottom:8px"></div>
           <div style="overflow-x:auto"><table><thead><tr><th>Emp No.</th><th>Name</th><th>Became permanent on</th><th></th></tr></thead><tbody id="hp-perm-tbody"></tbody></table></div>
           <button class="btn btn-primary btn-sm editor-only" style="margin-top:10px" onclick="openHpPermModal(null)">＋ Add / change a date</button>
@@ -664,7 +664,7 @@ body.view-only .editor-only{display:none!important}
       </div>
       <div class="rep-tile" onclick="openHpYears()">
         <div class="ri">🏖️</div>
-        <div><div class="rt">Holiday Pay Reports</div><div class="rd">Yearly totals and every employee's statement — print a whole year at once</div></div>
+        <div><div class="rt">Holiday Pay Reports</div><div class="rd">Permanent and temporary reports — tick the statements you want and print only those</div></div>
       </div>
     </div>
   </div>
@@ -685,17 +685,25 @@ body.view-only .editor-only{display:none!important}
   <!-- Employee Evaluation: questionnaire / saved report -->
   <div class="card" id="rep-evform-card" style="display:none"></div>
 
-  <!-- Holiday Pay Reports: list of holiday years -->
+  <!-- Holiday Pay Reports: the two reports (permanent / temporary) -->
   <div class="card" id="rep-hpyears-card" style="display:none">
     <div class="card-header">
       <h2>Holiday Pay Reports</h2>
       <button class="btn btn-outline btn-sm" onclick="showReportsHome()">← Back</button>
     </div>
-    <div style="padding:8px 18px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--border)">One row per holiday year (1 Nov – 31 Oct). Open a year to see every employee's statement, or print the year's report.</div>
-    <div class="card-body tbl-wrap">
+    <div style="padding:8px 18px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--border)">Two reports. Open one to see every employee's statement — tick the ones you want and print only those.</div>
+    <div style="padding:14px 18px 6px;font-weight:700;font-size:14px">1. Permanent employees <span style="font-weight:400;font-size:12px;color:var(--muted)">— holiday year 1 Nov to 31 Oct (staff who went permanent during the year: 1 Jan to 31 Oct)</span></div>
+    <div class="tbl-wrap">
       <table>
         <thead><tr><th>Holiday year</th><th style="text-align:center">Employees</th><th style="text-align:center">Weeks</th><th style="text-align:right">Holiday Pay</th><th style="text-align:right">Could have received</th><th style="text-align:right">Lost to absence</th><th></th></tr></thead>
-        <tbody id="hpr-years-tbody"></tbody>
+        <tbody id="hpr-perm-tbody"></tbody>
+      </table>
+    </div>
+    <div style="padding:18px 18px 6px;font-weight:700;font-size:14px;border-top:1px solid var(--border);margin-top:8px">2. Temporary employees <span style="font-weight:400;font-size:12px;color:var(--muted)">— calendar year 1 Jan to 31 Dec</span></div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Calendar year</th><th style="text-align:center">Employees</th><th style="text-align:center">Weeks</th><th style="text-align:right">Holiday Pay</th><th style="text-align:right">Could have received</th><th style="text-align:right">Lost to absence</th><th></th></tr></thead>
+        <tbody id="hpr-temp-tbody"></tbody>
       </table>
     </div>
   </div>
@@ -2677,20 +2685,72 @@ function hpCurrentHolidayYear(){
 function hpYearLabel(startYear){
   return `1 Nov ${startYear} – 31 Oct ${startYear+1}`;
 }
-// Which holiday year is being viewed. null = automatic: the newest holiday year
-// that has records (falls back to the current one when there are none at all).
-let hpViewYear = null;
-function hpYearsWithData(){
+// ── Statement periods ──────────────────────────────────────────────
+// Permanent staff are paid on the holiday year  1 Nov – 31 Oct.
+// Temporary staff are paid on the calendar year 1 Jan – 31 Dec.
+// Someone who goes temp → permanent between 1 Jan and 31 Oct gets ONE statement, 1 Jan – 31 Oct
+// (temporary formula before the date, permanent formula from it). It is listed with the permanent staff.
+// A period is written 'P2025' (permanent holiday year starting 1 Nov 2025) or 'T2026' (temporary calendar year 2026).
+const HP_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function hpDmy(iso){ return `${+iso.slice(8,10)} ${HP_MON[+iso.slice(5,7)-1]} ${iso.slice(0,4)}`; }
+function hpPerStr(kind, yr){ return kind+yr; }
+function hpPerParse(p){
+  if (typeof p==='number') return { kind:'P', yr:p };
+  p = String(p||'');
+  return { kind: p[0]==='T' ? 'T' : 'P', yr: Number(p.replace(/^[PT]/,'')) };
+}
+function hpPerNorm(p){ if (p==null || p==='') return hpSelectedPer(); const x = hpPerParse(p); return hpPerStr(x.kind, x.yr); }
+function hpPerEnd(p){ const {kind,yr}=hpPerParse(p); return kind==='T' ? `${yr}-12-31` : `${yr+1}-10-31`; }
+function hpPerLabel(p){ const {kind,yr}=hpPerParse(p); return kind==='T' ? `1 Jan ${yr} – 31 Dec ${yr}` : hpYearLabel(yr); }
+function hpPerName(p){ return hpPerParse(p).kind==='T' ? 'Temporary employees' : 'Permanent employees'; }
+function hpCurrentPer(kind){
+  const today = new Date().toISOString().slice(0,10);
+  return kind==='T' ? hpPerStr('T', Number(today.slice(0,4))) : hpPerStr('P', hpHolidayYearFor(today));
+}
+// Which statement does one imported week belong to?
+function hpStmtOf(rec){
+  const we = rec.weekEnd; if (!we) return null;
+  const y = Number(we.slice(0,4)), m = Number(we.slice(5,7));
+  const pd = hpPermDate(rec.empNo);
+  // Became permanent between 1 Jan and 31 Oct, and this week ends in that same Jan–Oct stretch → the one Jan–Oct statement
+  if (pd && m<=10 && pd>=`${y}-01-01` && pd<=`${y}-10-31`) return { kind:'P', yr:y-1 };
+  if (hpWeekType(rec)==='temporary') return { kind:'T', yr:y };
+  return { kind:'P', yr:hpHolidayYearFor(we) };
+}
+// Dates and label of one employee's statement within a period.
+function hpStmtInfo(empNo, p){
+  const { kind, yr } = hpPerParse(p);
+  const pd = hpPermDate(empNo) || '';
+  let from, to, conv = false;
+  if (kind==='T') { from = `${yr}-01-01`; to = `${yr}-12-31`; }
+  else {
+    from = `${yr}-11-01`; to = `${yr+1}-10-31`;
+    if (pd && pd>=`${yr+1}-01-01` && pd<=to) { conv = true; from = `${yr+1}-01-01`; }
+  }
+  return { kind, yr, conv, pd, from, to,
+           leaveFrom: (pd && pd>from) ? pd : from,       // the sick/family allowance starts when they became permanent
+           label: `${hpDmy(from)} – ${hpDmy(to)}` };
+}
+function hpPeriodRecs(p){
+  const { kind, yr } = hpPerParse(p);
+  return db.hp.filter(r=>{ const s = hpStmtOf(r); return s && s.kind===kind && s.yr===yr; });
+}
+function hpStmtRecs(empNo, p){
+  return hpPeriodRecs(p).filter(r=>r.empNo===empNo).sort((a,b)=>(a.weekEnd||'').localeCompare(b.weekEnd||''));
+}
+function hpPeriodsWithData(){
   const set = new Set();
-  db.hp.forEach(h=>{ const y = hpHolidayYearFor(h.weekEnd); if (y!=null) set.add(y); });
-  return [...set].sort((a,b)=>b-a);
+  db.hp.forEach(r=>{ const s = hpStmtOf(r); if (s && !isNaN(s.yr)) set.add(hpPerStr(s.kind, s.yr)); });
+  return [...set].sort((a,b)=>hpPerEnd(b).localeCompare(hpPerEnd(a)));
 }
-function hpSelectedYear(){
-  if (hpViewYear!=null) return hpViewYear;
-  const ys = hpYearsWithData();
-  return ys.length ? ys[0] : hpCurrentHolidayYear();
+// Which period is being viewed on the Holiday Pay tab. null = automatic (newest permanent period that has records).
+let hpViewPer = null;
+function hpSelectedPer(){
+  if (hpViewPer) return hpViewPer;
+  const ps = hpPeriodsWithData();
+  return ps.find(p=>p[0]==='P') || ps[0] || hpCurrentPer('P');
 }
-function hpChangeYear(v){ hpViewYear = Number(v); renderHolidayPay(); }
+function hpChangeYear(v){ hpViewPer = v; renderHolidayPay(); }
 
 // ── Rules in force (built-in defaults + dated changes the user adds) ──
 const HP_DEFAULT_RULES = {
@@ -2724,11 +2784,10 @@ function hpIsoShift(iso, days){
   const d = new Date(iso+'T00:00:00'); d.setDate(d.getDate()+days);
   return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
 }
-// Every weekday (Mon–Fri) of one leave type taken in a holiday year, sorted.
-function hpLeaveDates(empNo, type, yr){
-  const key = empNo+'|'+type+'|'+yr;
+// Every weekday (Mon–Fri) of one leave type taken between two dates, sorted.
+function hpLeaveDates(empNo, type, from, to){
+  const key = empNo+'|'+type+'|'+from+'|'+to;
   if (hpCache[key]) return hpCache[key];
-  const from = `${yr}-11-01`, to = `${yr+1}-10-31`;
   const nos = empNosToMatch(empNo);
   const set = new Set();
   db.leave.forEach(r=>{
@@ -2743,14 +2802,15 @@ function hpLeaveDates(empNo, type, yr){
   return (hpCache[key] = [...set].sort());
 }
 // Hours in this week that are sick / family leave days which COUNT as worked
-// (the first N sick days and first M family days of the holiday year).
+// (the first N sick days and first M family days of the statement period, counted from when they became permanent).
 function hpIncludedLeave(rec, rules){
-  const yr = hpHolidayYearFor(rec.weekEnd);
+  const st = hpStmtOf(rec);
+  const info = hpStmtInfo(rec.empNo, hpPerStr(st.kind, st.yr));
   const ws = rec.weekStart || hpIsoShift(rec.weekEnd,-6);
   let hours = 0, sick = 0, fam = 0;
   const seen = new Set();
   [['Sick leave',rules.sickDays,'s'],['Family responsibility',rules.famDays,'f']].forEach(([type,n,k])=>{
-    hpLeaveDates(rec.empNo,type,yr).slice(0,n).forEach(iso=>{
+    hpLeaveDates(rec.empNo,type,info.leaveFrom,info.to).slice(0,n).forEach(iso=>{
       if (iso<ws || iso>rec.weekEnd || seen.has(iso)) return;
       seen.add(iso);
       hours += new Date(iso+'T00:00:00').getDay()===5 ? rules.hoursFri : rules.hoursMonThu;
@@ -2785,25 +2845,28 @@ function hpCalc(rec){
 
 function renderHolidayPay(){
   hpCache = {};
-  const yr = hpSelectedYear();
-  const yrs = [...new Set([...hpYearsWithData(), hpCurrentHolidayYear(), yr])].sort((a,b)=>b-a);
-  document.getElementById('hp-year').innerHTML = yrs.map(y=>
-    `<option value="${y}" ${y===yr?'selected':''}>${hpYearLabel(y)}${y===hpCurrentHolidayYear()?' (current)':''}</option>`).join('');
+  const per = hpSelectedPer();
+  const curP = hpCurrentPer('P'), curT = hpCurrentPer('T');
+  const pers = [...new Set([...hpPeriodsWithData(), curP, curT, per])].sort((a,b)=>hpPerEnd(b).localeCompare(hpPerEnd(a)));
+  const opt = p => `<option value="${p}" ${p===per?'selected':''}>${hpPerLabel(p)}${(p===curP||p===curT)?' (current)':''}</option>`;
+  document.getElementById('hp-year').innerHTML =
+    `<optgroup label="Permanent employees — 1 Nov to 31 Oct">${pers.filter(p=>p[0]==='P').map(opt).join('')}</optgroup>` +
+    `<optgroup label="Temporary employees — 1 Jan to 31 Dec">${pers.filter(p=>p[0]==='T').map(opt).join('')}</optgroup>`;
+  document.getElementById('hp-year-note').textContent = hpPerParse(per).kind==='T'
+    ? '(temporary staff · 1 Jan – 31 Dec)'
+    : '(permanent staff · 1 Nov – 31 Oct · staff who went permanent during the year show 1 Jan – 31 Oct)';
 
   const q = (document.getElementById('hp-search').value||'').toLowerCase();
 
-  // Group this holiday year's rows by employee
+  // Group this period's rows by employee
   const byEmp = {};
-  db.hp.forEach(h=>{
-    if (hpHolidayYearFor(h.weekEnd) !== yr) return;
-    (byEmp[h.empNo] = byEmp[h.empNo]||[]).push(h);
-  });
+  hpPeriodRecs(per).forEach(h=>{ (byEmp[h.empNo] = byEmp[h.empNo]||[]).push(h); });
 
   let rows = Object.keys(byEmp).map(empNo=>{
     const e = findEmp(empNo);
     const recs = byEmp[empNo];
     const total = recs.reduce((t,r)=>t+hpCalc(r).pay,0);
-    return { empNo, e, weeks: recs.length, total };
+    return { empNo, e, weeks: recs.length, total, info: hpStmtInfo(empNo, per) };
   }).filter(r=>r.e); // only currently-employed staff — someone who's left shouldn't show here
 
   if (q) rows = rows.filter(r=>{
@@ -2814,20 +2877,22 @@ function renderHolidayPay(){
 
   document.getElementById('hp-count').textContent = `(${rows.length} employees)`;
   document.getElementById('hp-tbody').innerHTML = rows.length ? rows.map(r=>{
-    const pd = hpPermDate(r.empNo);
+    const pd = r.info.pd;
+    const sub = r.info.conv ? `<div style="font-size:10px">temp → permanent on ${fmtDate(pd)} · statement ${r.info.label}</div>`
+              : (pd ? `<div style="font-size:10px">permanent from ${fmtDate(pd)}</div>` : '');
     return `
     <tr>
       <td class="emp-no">${r.empNo}</td>
       <td>${r.e ? `${r.e.surname} ${r.e.initials}` : '<span style="color:var(--muted)">Unknown employee</span>'}</td>
-      <td style="font-size:12px;color:var(--muted)">${r.e ? (r.e.employmentType||'—') : '—'}${pd?`<div style="font-size:10px">permanent from ${fmtDate(pd)}</div>`:''}</td>
+      <td style="font-size:12px;color:var(--muted)">${r.e ? (r.e.employmentType||'—') : '—'}${sub}</td>
       <td style="text-align:center">${r.weeks}</td>
       <td style="text-align:right;font-weight:700">${fmt2(r.total)}</td>
-      <td style="white-space:nowrap"><button class="btn btn-outline btn-sm" onclick="openHpBreakdown('${r.empNo}',${yr})">🔍 Breakdown</button> <button class="btn btn-outline btn-sm" onclick="printHolidayPayReport('${r.empNo}')">🖨 Print PDF</button></td>
+      <td style="white-space:nowrap"><button class="btn btn-outline btn-sm" onclick="openHpBreakdown('${r.empNo}','${per}')">🔍 Breakdown</button> <button class="btn btn-outline btn-sm" onclick="printHolidayPayReport('${r.empNo}','${per}')">🖨 Print PDF</button></td>
     </tr>`;
-  }).join('') : '<tr><td colspan="6" class="empty"><div class="ico">🏖️</div>No holiday pay records for this holiday year yet</td></tr>';
+  }).join('') : '<tr><td colspan="6" class="empty"><div class="ico">🏖️</div>No holiday pay records for this period yet</td></tr>';
 
   renderHpRules();
-  renderHpPerm(yr);
+  renderHpPerm(per);
 }
 
 // ── Rules panel ──
@@ -2897,7 +2962,7 @@ async function deleteHpRule(id){
 }
 
 // ── Temporary → Permanent dates panel ──
-function renderHpPerm(yr){
+function renderHpPerm(per){
   const list = db.hpPerm.slice().map(x=>({ ...x, e: findEmp(x.empNo) }))
     .sort((a,b)=>(a.e?a.e.surname:a.empNo).localeCompare(b.e?b.e.surname:b.empNo));
   document.getElementById('hp-perm-tbody').innerHTML = list.length ? list.map(x=>`<tr>
@@ -2909,8 +2974,9 @@ function renderHpPerm(yr){
   document.getElementById('hp-perm-count').textContent = list.length ? `(${list.length})` : '';
   // Staff who look like they changed: weeks imported as temporary, but now Permanent, and no date entered yet
   const seen = new Set(), need = [];
+  const pp = hpPerParse(per), wFrom = pp.kind==='T' ? `${pp.yr}-01-01` : `${pp.yr}-11-01`, wTo = hpPerEnd(per);
   db.hp.forEach(r=>{
-    if (hpHolidayYearFor(r.weekEnd)!==yr || r.calcType!=='temporary' || seen.has(r.empNo) || hpPermDate(r.empNo)) return;
+    if (!r.weekEnd || r.weekEnd<wFrom || r.weekEnd>wTo || r.calcType!=='temporary' || seen.has(r.empNo) || hpPermDate(r.empNo)) return;
     const e = findEmp(r.empNo);
     if (e && e.employmentType==='Permanent') { seen.add(r.empNo); need.push(e); }
   });
@@ -2956,10 +3022,11 @@ async function deleteHpPerm(empNo){
 
 // ── Full working-out of one employee's year, for checking the figures ──
 let hpbCurrent = null;
-function hpBreakdownInner(empNo, yr){
+function hpBreakdownInner(empNo, p){
   hpCache = {};
-  const recs = db.hp.filter(r=>r.empNo===empNo && hpHolidayYearFor(r.weekEnd)===yr)
-                    .sort((a,b)=>(a.weekEnd||'').localeCompare(b.weekEnd||''));
+  p = hpPerNorm(p);
+  const info = hpStmtInfo(empNo, p);
+  const recs = hpStmtRecs(empNo, p);
   const items = recs.map(r=>({ r, c: hpCalc(r) }));
   const perm = items.filter(x=>x.c.type==='permanent');
   const temp = items.filter(x=>x.c.type==='temporary');
@@ -2968,14 +3035,15 @@ function hpBreakdownInner(empNo, yr){
   const total = items.reduce((t,x)=>t+x.c.pay,0);
   const could = items.reduce((t,x)=>t+Math.max(x.c.potPay,x.c.pay),0);
   let html = '';
-  if (!items.length) return '<p class="hp-sub">No holiday pay records for this holiday year.</p>';
+  if (!items.length) return '<p class="hp-sub">No holiday pay records for this period.</p>';
 
   // rules in force (shows a change mid-year if there was one)
   const seen = new Map();
   items.forEach(x=>{ const k = hpRuleSummary(x.c.rules); if (!seen.has(k)) seen.set(k, x.r.weekEnd); });
   html += `<div style="font-size:12px;margin-bottom:10px"><b>Rules used:</b> ${[...seen.entries()].map(([k,d])=>`${seen.size>1?`<i>from week ending ${fmtDate(d)}:</i> `:''}${noteEsc(k)}`).join('<br>')}</div>`;
-  const pd = hpPermDate(empNo);
-  if (pd) html += `<div style="font-size:12px;margin-bottom:10px"><b>Permanent from:</b> ${fmtDate(pd)} — earlier weeks use the temporary formula.</div>`;
+  html += `<div style="font-size:12px;margin-bottom:10px"><b>Statement period:</b> ${info.label} (${info.kind==='T' ? 'temporary employee — calendar year' : (info.conv ? 'went from temporary to permanent — Jan to Oct' : 'permanent employee — holiday year')})</div>`;
+  const pd = info.pd;
+  if (pd && (info.conv || perm.length || temp.length)) html += `<div style="font-size:12px;margin-bottom:10px"><b>Permanent from:</b> ${fmtDate(pd)} — earlier weeks use the temporary formula.</div>`;
 
   if (perm.length) {
     html += `<div class="hp-section-title">Permanent weeks</div>
@@ -2999,15 +3067,17 @@ function hpBreakdownInner(empNo, yr){
     </table>`;
   }
 
-  // sick / family leave days of the year, and which ones count as worked
-  const last = items[items.length-1].c.rules;
-  const chips = (type, n) => {
-    const ds = hpLeaveDates(empNo, type, yr);
-    return ds.length ? ds.map((d,i)=>`<span style="display:inline-block;border:1px solid ${i<n?'#9ccc9c':'#ddd'};background:${i<n?'#EAF6EA':'#fff'};border-radius:10px;padding:1px 8px;margin:2px 4px 2px 0;font-size:11px">${fmtDate(d)}${i<n?' ✓':''}</span>`).join('') : '<span style="color:#777">none</span>';
-  };
-  html += `<div class="hp-section-title">Leave days this holiday year (weekdays) — ✓ = counts as worked</div>
-    <div style="font-size:12px;margin-bottom:4px"><b>Sick leave</b> (first ${last.sickDays} count): ${chips('Sick leave', last.sickDays)}</div>
-    <div style="font-size:12px"><b>Family responsibility</b> (first ${last.famDays} count): ${chips('Family responsibility', last.famDays)}</div>`;
+  // sick / family leave days of the period, and which ones count as worked (only matters for permanent weeks)
+  if (perm.length) {
+    const last = perm[perm.length-1].c.rules;
+    const chips = (type, n) => {
+      const ds = hpLeaveDates(empNo, type, info.leaveFrom, info.to);
+      return ds.length ? ds.map((d,i)=>`<span style="display:inline-block;border:1px solid ${i<n?'#9ccc9c':'#ddd'};background:${i<n?'#EAF6EA':'#fff'};border-radius:10px;padding:1px 8px;margin:2px 4px 2px 0;font-size:11px">${fmtDate(d)}${i<n?' ✓':''}</span>`).join('') : '<span style="color:#777">none</span>';
+    };
+    html += `<div class="hp-section-title">Leave days from ${hpDmy(info.leaveFrom)} to ${hpDmy(info.to)} (weekdays) — ✓ = counts as worked</div>
+      <div style="font-size:12px;margin-bottom:4px"><b>Sick leave</b> (first ${last.sickDays} count): ${chips('Sick leave', last.sickDays)}</div>
+      <div style="font-size:12px"><b>Family responsibility</b> (first ${last.famDays} count): ${chips('Family responsibility', last.famDays)}</div>`;
+  }
 
   html += `<table class="hp-table" style="width:auto;margin:16px 0 0 auto;min-width:360px;font-size:12px">
       <tr><td>Holiday pay total</td><td class="num"><b>${fmt2(total)}</b></td></tr>
@@ -3016,37 +3086,39 @@ function hpBreakdownInner(empNo, yr){
     </table>`;
   return html;
 }
-function hpBreakdownTitle(empNo, yr){
+function hpBreakdownTitle(empNo, p){
   const e = findEmp(empNo);
-  return `${e?`${e.surname}, ${e.displayName||e.initials}`:'Employee'} (Emp No. ${empNo}) — ${hpYearLabel(yr)}`;
+  return `${e?`${e.surname}, ${e.displayName||e.initials}`:'Employee'} (Emp No. ${empNo}) — ${hpStmtInfo(empNo, hpPerNorm(p)).label}`;
 }
-function openHpBreakdown(empNo, yr){
-  hpbCurrent = { empNo, yr };
-  document.getElementById('hpb-title').textContent = 'Holiday pay breakdown — ' + hpBreakdownTitle(empNo, yr);
-  document.getElementById('hpb-body').innerHTML = hpBreakdownInner(empNo, yr);
+function openHpBreakdown(empNo, p){
+  p = hpPerNorm(p);
+  hpbCurrent = { empNo, p };
+  document.getElementById('hpb-title').textContent = 'Holiday pay breakdown — ' + hpBreakdownTitle(empNo, p);
+  document.getElementById('hpb-body').innerHTML = hpBreakdownInner(empNo, p);
   openModal('modal-hp-breakdown');
 }
 function printHpBreakdown(){
   if (!hpbCurrent) return;
-  const { empNo, yr } = hpbCurrent;
+  const { empNo, p } = hpbCurrent;
   const logoImg = document.querySelector('header img');
   document.getElementById('hp-print').innerHTML = `
     <style>@page{size:A4 landscape;margin:12mm}</style>
     <div class="hp-page" style="max-width:none;padding:10px 20px">
       <img class="hp-logo" src="${logoImg?logoImg.src:''}" alt="elmo's Furniture" style="margin-bottom:10px">
       <div class="hp-h1">Holiday Pay Breakdown</div>
-      <div class="hp-sub">${noteEsc(hpBreakdownTitle(empNo, yr))}</div>
-      ${hpBreakdownInner(empNo, yr)}
+      <div class="hp-sub">${noteEsc(hpBreakdownTitle(empNo, p))}</div>
+      ${hpBreakdownInner(empNo, p)}
     </div>`;
   setTimeout(()=>window.print(), 150);
 }
 
 // One employee's statement for one holiday year, as printable HTML.
 // Shared by the single-statement print and the whole-year print.
-function hpStatementHtml(empNo, yr){
+function hpStatementHtml(empNo, p){
+  p = hpPerNorm(p);
+  const info = hpStmtInfo(empNo, p);
   const e = findEmp(empNo);
-  const recs = db.hp.filter(h=>h.empNo===empNo && hpHolidayYearFor(h.weekEnd)===yr)
-                     .sort((a,b)=>(a.weekEnd||'').localeCompare(b.weekEnd||''));
+  const recs = hpStmtRecs(empNo, p);
   const calcs = recs.map(r=>({ r, c: hpCalc(r) }));
   const tempItems = calcs.filter(x=>x.c.type==='temporary');
   const permItems = calcs.filter(x=>x.c.type==='permanent');
@@ -3115,9 +3187,10 @@ function hpStatementHtml(empNo, yr){
       </table>`;
   }
   if (!recs.length) {
-    sectionsHtml = '<p class="hp-sub">No holiday pay records for this holiday year.</p>';
+    sectionsHtml = '<p class="hp-sub">No holiday pay records for this period.</p>';
   }
-  const pd = hpPermDate(empNo);
+  const pd = info.pd;
+  const kindTxt = info.kind==='T' ? 'Temporary employee' : (info.conv ? 'Temporary until '+fmtDate(pd)+', then permanent' : 'Permanent employee');
 
   return `
     <div class="hp-page">
@@ -3125,7 +3198,8 @@ function hpStatementHtml(empNo, yr){
       <div class="hp-h1">Holiday Pay Statement</div>
       <div class="hp-sub">
         ${nm} (Emp No. ${empNo})${e?`<br>${e.employmentType||''}${e.department?' — '+e.department:''}`:''}${pd?`<br>Permanent from ${fmtDate(pd)}`:''}<br>
-        Holiday year: ${hpYearLabel(yr)}
+        ${kindTxt}<br>
+        Statement period: ${info.label}
       </div>
       ${sectionsHtml}
       <div class="hp-grand-total">Holiday Pay Total: ${fmt2(yearTotal)}</div>
@@ -3137,23 +3211,28 @@ function hpStatementHtml(empNo, yr){
   `;
 }
 
-function printHolidayPayReport(empNo, yr){
+function printHolidayPayReport(empNo, p){
   hpCache = {};
-  if (yr==null) yr = hpSelectedYear();
-  document.getElementById('hp-print').innerHTML = hpStatementHtml(empNo, yr);
+  p = hpPerNorm(p);
+  document.getElementById('hp-print').innerHTML = hpStatementHtml(empNo, p);
   setTimeout(()=>window.print(), 150);
 }
 
 // ════════════════════════════════════════════════════════
-// REPORTS → HOLIDAY PAY REPORTS (yearly totals + all statements)
+// REPORTS → HOLIDAY PAY REPORTS
+//   Report 1: Permanent employees (holiday year 1 Nov – 31 Oct; staff who went permanent get 1 Jan – 31 Oct)
+//   Report 2: Temporary employees (calendar year 1 Jan – 31 Dec)
 // ════════════════════════════════════════════════════════
-let hprYear = null;   // holiday year currently open in the Reports tab
-function hpYearSummary(yr){
+let hprPer = null;        // period currently open in the Reports tab, e.g. 'P2025' or 'T2026'
+let hprSel = new Set();   // empNos ticked for printing
+function hpYearSummary(p){
   hpCache = {};
+  p = hpPerNorm(p);
   const by = {};
-  db.hp.forEach(r=>{ if (hpHolidayYearFor(r.weekEnd)!==yr) return; (by[r.empNo] = by[r.empNo]||[]).push(r); });
+  hpPeriodRecs(p).forEach(r=>{ (by[r.empNo] = by[r.empNo]||[]).push(r); });
   const rows = Object.keys(by).map(empNo=>{
     const e = findEmp(empNo);
+    const info = hpStmtInfo(empNo, p);
     let pay=0, could=0, tempPay=0, permPay=0;
     by[empNo].forEach(r=>{
       const c = hpCalc(r);
@@ -3161,48 +3240,59 @@ function hpYearSummary(yr){
       if (c.type==='temporary') tempPay += c.pay; else permPay += c.pay;
     });
     return { empNo, e, weeks: by[empNo].length, pay, could, lost: Math.max(0, could-pay), tempPay, permPay,
+             conv: info.conv, period: info.label,
              name: e ? `${e.surname}, ${e.displayName||e.initials}` : `Emp ${empNo} (not on current list)` };
   }).sort((a,b)=>(a.e?0:1)-(b.e?0:1) || (a.e?a.e.surname:a.empNo).localeCompare(b.e?b.e.surname:b.empNo));   // staff no longer on the list go last
   const totals = rows.reduce((s,r)=>({ weeks:s.weeks+r.weeks, pay:s.pay+r.pay, could:s.could+r.could, lost:s.lost+r.lost,
                                       tempPay:s.tempPay+r.tempPay, permPay:s.permPay+r.permPay }),
                              { weeks:0, pay:0, could:0, lost:0, tempPay:0, permPay:0 });
-  return { yr, rows, totals };
+  return { p, rows, totals };
 }
 function openHpYears(){ evShow('hpyears'); renderHpYears(); }
-function renderHpYears(){
-  const yrs = [...new Set([...hpYearsWithData(), hpCurrentHolidayYear()])].sort((a,b)=>b-a);
-  document.getElementById('hpr-years-tbody').innerHTML = yrs.map(y=>{
-    const s = hpYearSummary(y);
+function hpYearsRowsHtml(kind){
+  const cur = hpCurrentPer(kind);
+  const pers = [...new Set([...hpPeriodsWithData().filter(p=>p[0]===kind), cur])].sort((a,b)=>hpPerEnd(b).localeCompare(hpPerEnd(a)));
+  return pers.map(p=>{
+    const s = hpYearSummary(p);
+    const conv = s.rows.filter(r=>r.conv).length;
     return `<tr>
-      <td style="font-weight:700;cursor:pointer" onclick="openHpYear(${y})">${hpYearLabel(y)}${y===hpCurrentHolidayYear()?' <span style="color:var(--green);font-size:11px">(current)</span>':''}</td>
+      <td style="font-weight:700;cursor:pointer" onclick="openHpYear('${p}')">${hpPerLabel(p)}${p===cur?' <span style="color:var(--green);font-size:11px">(current)</span>':''}${conv?`<div style="font-weight:400;font-size:11px;color:var(--muted)">${conv} went temp → permanent (statement 1 Jan – 31 Oct)</div>`:''}</td>
       <td style="text-align:center">${s.rows.length}</td>
       <td style="text-align:center">${s.totals.weeks}</td>
       <td style="text-align:right;font-weight:700">${fmt2(s.totals.pay)}</td>
       <td style="text-align:right">${fmt2(s.totals.could)}</td>
       <td style="text-align:right;color:var(--red)">${fmt2(s.totals.lost)}</td>
-      <td style="white-space:nowrap;text-align:right"><button class="btn btn-outline btn-sm" onclick="openHpYear(${y})">Open</button> <button class="btn btn-outline btn-sm" onclick="printHpYearReport(${y})">🖨 Year report</button></td>
+      <td style="white-space:nowrap;text-align:right"><button class="btn btn-outline btn-sm" onclick="openHpYear('${p}')">Open</button> <button class="btn btn-outline btn-sm" onclick="printHpYearReport('${p}')">🖨 Report</button></td>
     </tr>`;
   }).join('');
 }
-function openHpYear(yr){
-  hprYear = yr;
-  const s = hpYearSummary(yr);
+function renderHpYears(){
+  document.getElementById('hpr-perm-tbody').innerHTML = hpYearsRowsHtml('P');
+  document.getElementById('hpr-temp-tbody').innerHTML = hpYearsRowsHtml('T');
+}
+function openHpYear(p){
+  hprPer = hpPerNorm(p);
+  hprSel = new Set();
+  const s = hpYearSummary(hprPer);
+  const conv = s.rows.filter(r=>r.conv).length;
   document.getElementById('rep-hpyear-card').innerHTML = `
     <div class="card-header">
-      <div><h2>Holiday year ${hpYearLabel(yr)}</h2>
-        <div style="font-size:12px;color:var(--muted);margin-top:2px">${s.rows.length} employees · ${s.totals.weeks} weeks · Holiday Pay <b>${fmt2(s.totals.pay)}</b> · Could have received ${fmt2(s.totals.could)} · Lost to absence <span style="color:var(--red)">${fmt2(s.totals.lost)}</span></div></div>
+      <div><h2>${hpPerName(hprPer)} — ${hpPerLabel(hprPer)}</h2>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px">${s.rows.length} employees · ${s.totals.weeks} weeks · Holiday Pay <b>${fmt2(s.totals.pay)}</b> · Could have received ${fmt2(s.totals.could)} · Lost to absence <span style="color:var(--red)">${fmt2(s.totals.lost)}</span>${conv?`<br>${conv} of them went temp → permanent and have a 1 Jan – 31 Oct statement`:''}</div></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn-outline btn-sm" onclick="openHpYears()">← All years</button>
-        <button class="btn btn-outline btn-sm" onclick="printHpYearReport(${yr})">🖨 Year report</button>
-        <button class="btn btn-primary btn-sm" onclick="printHpAllStatements(${yr})">🖨 Print all ${s.rows.length} statements</button>
+        <button class="btn btn-outline btn-sm" onclick="openHpYears()">← All reports</button>
+        <button class="btn btn-outline btn-sm" onclick="printHpYearReport('${hprPer}')">🖨 Report</button>
+        <button class="btn btn-primary btn-sm" id="hpr-printsel" onclick="printHpSelected()" disabled>🖨 Print ticked statements (0)</button>
       </div>
     </div>
-    <div class="search-row" style="padding:10px 18px;border-bottom:1px solid var(--border)">
+    <div class="search-row" style="padding:10px 18px;border-bottom:1px solid var(--border);align-items:center">
       <input type="text" id="hpr-search" placeholder="Search name or emp no…" oninput="renderHpYearRows()">
+      <button class="btn btn-outline btn-sm" onclick="hprTickAll(true)">☑ Tick all shown</button>
+      <button class="btn btn-outline btn-sm" onclick="hprTickAll(false)">☐ Untick all</button>
     </div>
     <div class="card-body tbl-wrap">
       <table>
-        <thead><tr><th>Emp No.</th><th>Name</th><th style="text-align:center">Weeks</th><th style="text-align:right">Holiday Pay</th><th style="text-align:right">Could have received</th><th style="text-align:right">Lost to absence</th><th></th></tr></thead>
+        <thead><tr><th style="width:34px"><input type="checkbox" id="hpr-all" title="Tick / untick all shown" onchange="hprTickAll(this.checked)"></th><th>Emp No.</th><th>Name</th><th>Statement period</th><th style="text-align:center">Weeks</th><th style="text-align:right">Holiday Pay</th><th style="text-align:right">Could have received</th><th style="text-align:right">Lost to absence</th><th></th></tr></thead>
         <tbody id="hpr-tbody"></tbody>
       </table>
     </div>`;
@@ -3210,49 +3300,71 @@ function openHpYear(yr){
   renderHpYearRows();
   window.scrollTo(0,0);
 }
-function renderHpYearRows(){
+function hprVisibleRows(){
   const q = (document.getElementById('hpr-search').value||'').trim().toLowerCase();
-  const s = hpYearSummary(hprYear);
-  const rows = q ? s.rows.filter(r=>`${r.empNo} ${r.name}`.toLowerCase().includes(q)) : s.rows;
+  const s = hpYearSummary(hprPer);
+  return q ? s.rows.filter(r=>`${r.empNo} ${r.name}`.toLowerCase().includes(q)) : s.rows;
+}
+function hprUpdateSel(rows){
+  const n = hprSel.size;
+  const b = document.getElementById('hpr-printsel');
+  if (b) { b.textContent = `🖨 Print ticked statements (${n})`; b.disabled = n===0; }
+  const all = document.getElementById('hpr-all');
+  if (all && rows) all.checked = rows.length>0 && rows.every(r=>hprSel.has(r.empNo));
+}
+function hprTick(empNo, on){ if (on) hprSel.add(empNo); else hprSel.delete(empNo); hprUpdateSel(hprVisibleRows()); }
+function hprTickAll(on){
+  const rows = hprVisibleRows();
+  rows.forEach(r=>{ if (on) hprSel.add(r.empNo); else hprSel.delete(r.empNo); });
+  renderHpYearRows();
+}
+function renderHpYearRows(){
+  const rows = hprVisibleRows();
   document.getElementById('hpr-tbody').innerHTML = rows.length ? rows.map(r=>`<tr>
+    <td><input type="checkbox" ${hprSel.has(r.empNo)?'checked':''} onchange="hprTick('${r.empNo}',this.checked)"></td>
     <td class="emp-no">${noteEsc(r.empNo)}</td>
     <td>${r.e ? noteEsc(r.name) : `<span style="color:var(--muted)">${noteEsc(r.name)}</span>`}</td>
+    <td style="font-size:12px;white-space:nowrap">${r.period}${r.conv?'<div style="font-size:10px;color:var(--muted)">temp → permanent</div>':''}</td>
     <td style="text-align:center">${r.weeks}</td>
     <td style="text-align:right;font-weight:700">${fmt2(r.pay)}</td>
     <td style="text-align:right">${fmt2(r.could)}</td>
     <td style="text-align:right;color:var(--red)">${fmt2(r.lost)}</td>
-    <td style="white-space:nowrap"><button class="btn btn-outline btn-sm" onclick="openHpBreakdown('${r.empNo}',${hprYear})">🔍 Breakdown</button> <button class="btn btn-outline btn-sm" onclick="printHolidayPayReport('${r.empNo}',${hprYear})">🖨 Statement</button></td>
-  </tr>`).join('') : '<tr><td colspan="7" class="empty"><div class="ico">🏖️</div>No holiday pay records found</td></tr>';
+    <td style="white-space:nowrap"><button class="btn btn-outline btn-sm" onclick="openHpBreakdown('${r.empNo}','${hprPer}')">🔍 Breakdown</button> <button class="btn btn-outline btn-sm" onclick="printHolidayPayReport('${r.empNo}','${hprPer}')">🖨 Statement</button></td>
+  </tr>`).join('') : '<tr><td colspan="9" class="empty"><div class="ico">🏖️</div>No holiday pay records found</td></tr>';
+  hprUpdateSel(rows);
 }
-// Every employee's statement for the year, one per page, in a single print.
-function printHpAllStatements(yr){
-  const s = hpYearSummary(yr);
-  if (!s.rows.length) { showToast('No statements to print for this year', false); return; }
-  document.getElementById('hp-print').innerHTML = s.rows.map(r=>`<div class="hp-batch">${hpStatementHtml(r.empNo, yr)}</div>`).join('');
+// Only the ticked employees' statements, one per page, in a single print.
+function printHpSelected(){
+  const s = hpYearSummary(hprPer);
+  const picked = s.rows.filter(r=>hprSel.has(r.empNo));
+  if (!picked.length) { showToast('Tick at least one statement first', false); return; }
+  document.getElementById('hp-print').innerHTML = picked.map(r=>`<div class="hp-batch">${hpStatementHtml(r.empNo, hprPer)}</div>`).join('');
   setTimeout(()=>window.print(), 400);
 }
-// One-page-style summary of the whole year: every employee plus totals.
-function printHpYearReport(yr){
-  const s = hpYearSummary(yr);
+// One-page-style summary of the whole period: every employee plus totals.
+function printHpYearReport(p){
+  p = hpPerNorm(p);
+  const s = hpYearSummary(p);
+  const isPerm = hpPerParse(p).kind==='P';
   const logoImg = document.querySelector('header img');
   const logoSrc = logoImg ? logoImg.src : '';
   const t = s.totals;
   document.getElementById('hp-print').innerHTML = `
     <div class="hp-page">
       <img class="hp-logo" src="${logoSrc}" alt="elmo's Furniture">
-      <div class="hp-h1">Holiday Pay Report</div>
-      <div class="hp-sub">Holiday year: ${hpYearLabel(yr)}<br>${s.rows.length} employees · ${t.weeks} weeks · printed ${fmtDate(new Date().toISOString().slice(0,10))}</div>
+      <div class="hp-h1">Holiday Pay Report — ${hpPerName(p)}</div>
+      <div class="hp-sub">${hpPerParse(p).kind==='T' ? 'Calendar year' : 'Holiday year'}: ${hpPerLabel(p)}<br>${s.rows.length} employees · ${t.weeks} weeks · printed ${fmtDate(new Date().toISOString().slice(0,10))}</div>
       ${s.rows.length ? `
       <table class="hp-table">
-        <thead><tr><th>Emp No.</th><th>Name</th><th class="num">Weeks</th><th class="num">Holiday Pay</th><th class="num">Could have received</th><th class="num">Lost to absence</th></tr></thead>
-        <tbody>${s.rows.map(r=>`<tr><td>${noteEsc(r.empNo)}</td><td>${noteEsc(r.name)}</td><td class="num">${r.weeks}</td><td class="num">${fmt2(r.pay)}</td><td class="num">${fmt2(r.could)}</td><td class="num">${fmt2(r.lost)}</td></tr>`).join('')}</tbody>
-        <tfoot><tr class="hp-total-row"><td colspan="2">Total (${s.rows.length} employees)</td><td class="num">${t.weeks}</td><td class="num">${fmt2(t.pay)}</td><td class="num">${fmt2(t.could)}</td><td class="num">${fmt2(t.lost)}</td></tr></tfoot>
+        <thead><tr><th>Emp No.</th><th>Name</th>${isPerm?'<th>Statement period</th>':''}<th class="num">Weeks</th><th class="num">Holiday Pay</th><th class="num">Could have received</th><th class="num">Lost to absence</th></tr></thead>
+        <tbody>${s.rows.map(r=>`<tr><td>${noteEsc(r.empNo)}</td><td>${noteEsc(r.name)}</td>${isPerm?`<td style="font-size:11px;white-space:nowrap">${r.period}${r.conv?' (temp → perm)':''}</td>`:''}<td class="num">${r.weeks}</td><td class="num">${fmt2(r.pay)}</td><td class="num">${fmt2(r.could)}</td><td class="num">${fmt2(r.lost)}</td></tr>`).join('')}</tbody>
+        <tfoot><tr class="hp-total-row"><td colspan="${isPerm?3:2}">Total (${s.rows.length} employees)</td><td class="num">${t.weeks}</td><td class="num">${fmt2(t.pay)}</td><td class="num">${fmt2(t.could)}</td><td class="num">${fmt2(t.lost)}</td></tr></tfoot>
       </table>
-      <table class="hp-table" style="width:auto;margin:18px 0 0 auto;min-width:340px">
+      ${t.tempPay>0 && t.permPay>0 ? `<table class="hp-table" style="width:auto;margin:18px 0 0 auto;min-width:340px">
         <tr><td>Temporary period total</td><td class="num">${fmt2(t.tempPay)}</td></tr>
         <tr><td>Permanent period total</td><td class="num">${fmt2(t.permPay)}</td></tr>
-      </table>
-      <div class="hp-grand-total">Holiday Pay Total: ${fmt2(t.pay)}</div>` : '<p class="hp-sub">No holiday pay records for this holiday year.</p>'}
+      </table>` : ''}
+      <div class="hp-grand-total">Holiday Pay Total: ${fmt2(t.pay)}</div>` : '<p class="hp-sub">No holiday pay records for this period.</p>'}
     </div>`;
   setTimeout(()=>window.print(), 150);
 }
