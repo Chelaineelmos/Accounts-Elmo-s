@@ -265,6 +265,8 @@ body.view-only .editor-only{display:none!important}
   #doc-letter-print,#hp-print,#note-print,#eval-print{display:block!important;position:static;padding:0;margin:0}
   html,body{background:#fff}
 }
+.hp-batch{break-after:page;page-break-after:always}
+.hp-batch:last-child{break-after:auto;page-break-after:auto}
 .hp-panel{border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:#fff}
 .hp-panel summary{cursor:pointer;padding:9px 14px;font-weight:700;font-size:13px;color:var(--char)}
 .hp-panel .hp-pc{font-weight:400;color:var(--muted);font-size:12px}
@@ -342,7 +344,7 @@ body.view-only .editor-only{display:none!important}
 .hp-sub{color:#444;margin-bottom:20px}
 .hp-table{width:100%;border-collapse:collapse;margin-top:10px}
 .hp-table th,.hp-table td{border:1px solid #ccc;padding:6px 10px;text-align:left;font-size:12px}
-.hp-table th{background:#f0f0f0}
+.hp-table th{background:#f0f0f0;color:#222}
 .hp-table td.num,.hp-table th.num{text-align:right}
 .hp-total-row td{font-weight:700;border-top:2px solid #000}
 .hp-section-title{font-size:14px;font-weight:700;margin:26px 0 6px 0;color:#333}
@@ -660,6 +662,10 @@ body.view-only .editor-only{display:none!important}
         <div class="ri">📋</div>
         <div><div class="rt">Employee Evaluation</div><div class="rd">Rate an employee and view past evaluations</div></div>
       </div>
+      <div class="rep-tile" onclick="openHpYears()">
+        <div class="ri">🏖️</div>
+        <div><div class="rt">Holiday Pay Reports</div><div class="rd">Yearly totals and every employee's statement — print a whole year at once</div></div>
+      </div>
     </div>
   </div>
 
@@ -678,6 +684,24 @@ body.view-only .editor-only{display:none!important}
 
   <!-- Employee Evaluation: questionnaire / saved report -->
   <div class="card" id="rep-evform-card" style="display:none"></div>
+
+  <!-- Holiday Pay Reports: list of holiday years -->
+  <div class="card" id="rep-hpyears-card" style="display:none">
+    <div class="card-header">
+      <h2>Holiday Pay Reports</h2>
+      <button class="btn btn-outline btn-sm" onclick="showReportsHome()">← Back</button>
+    </div>
+    <div style="padding:8px 18px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--border)">One row per holiday year (1 Nov – 31 Oct). Open a year to see every employee's statement, or print the year's report.</div>
+    <div class="card-body tbl-wrap">
+      <table>
+        <thead><tr><th>Holiday year</th><th style="text-align:center">Employees</th><th style="text-align:center">Weeks</th><th style="text-align:right">Holiday Pay</th><th style="text-align:right">Could have received</th><th style="text-align:right">Lost to absence</th><th></th></tr></thead>
+        <tbody id="hpr-years-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Holiday Pay Reports: one holiday year -->
+  <div class="card" id="rep-hpyear-card" style="display:none"></div>
 </div>
 
 <!-- NOTES -->
@@ -2920,10 +2944,10 @@ async function deleteHpPerm(empNo){
   } catch(err) { showToast('Delete error: ' + err.message, false); }
 }
 
-function printHolidayPayReport(empNo){
-  hpCache = {};
+// One employee's statement for one holiday year, as printable HTML.
+// Shared by the single-statement print and the whole-year print.
+function hpStatementHtml(empNo, yr){
   const e = findEmp(empNo);
-  const yr = hpSelectedYear();
   const recs = db.hp.filter(h=>h.empNo===empNo && hpHolidayYearFor(h.weekEnd)===yr)
                      .sort((a,b)=>(a.weekEnd||'').localeCompare(b.weekEnd||''));
   const calcs = recs.map(r=>({ r, c: hpCalc(r) }));
@@ -2998,7 +3022,7 @@ function printHolidayPayReport(empNo){
   }
   const pd = hpPermDate(empNo);
 
-  document.getElementById('hp-print').innerHTML = `
+  return `
     <div class="hp-page">
       <img class="hp-logo" src="${logoSrc}" alt="elmo's Furniture">
       <div class="hp-h1">Holiday Pay Statement</div>
@@ -3014,6 +3038,125 @@ function printHolidayPayReport(empNo){
       </table>` : ''}
     </div>
   `;
+}
+
+function printHolidayPayReport(empNo, yr){
+  hpCache = {};
+  if (yr==null) yr = hpSelectedYear();
+  document.getElementById('hp-print').innerHTML = hpStatementHtml(empNo, yr);
+  setTimeout(()=>window.print(), 150);
+}
+
+// ════════════════════════════════════════════════════════
+// REPORTS → HOLIDAY PAY REPORTS (yearly totals + all statements)
+// ════════════════════════════════════════════════════════
+let hprYear = null;   // holiday year currently open in the Reports tab
+function hpYearSummary(yr){
+  hpCache = {};
+  const by = {};
+  db.hp.forEach(r=>{ if (hpHolidayYearFor(r.weekEnd)!==yr) return; (by[r.empNo] = by[r.empNo]||[]).push(r); });
+  const rows = Object.keys(by).map(empNo=>{
+    const e = findEmp(empNo);
+    let pay=0, could=0, tempPay=0, permPay=0;
+    by[empNo].forEach(r=>{
+      const c = hpCalc(r);
+      pay += c.pay; could += Math.max(c.potPay, c.pay);
+      if (c.type==='temporary') tempPay += c.pay; else permPay += c.pay;
+    });
+    return { empNo, e, weeks: by[empNo].length, pay, could, lost: Math.max(0, could-pay), tempPay, permPay,
+             name: e ? `${e.surname}, ${e.displayName||e.initials}` : `Emp ${empNo} (not on current list)` };
+  }).sort((a,b)=>(a.e?0:1)-(b.e?0:1) || (a.e?a.e.surname:a.empNo).localeCompare(b.e?b.e.surname:b.empNo));   // staff no longer on the list go last
+  const totals = rows.reduce((s,r)=>({ weeks:s.weeks+r.weeks, pay:s.pay+r.pay, could:s.could+r.could, lost:s.lost+r.lost,
+                                      tempPay:s.tempPay+r.tempPay, permPay:s.permPay+r.permPay }),
+                             { weeks:0, pay:0, could:0, lost:0, tempPay:0, permPay:0 });
+  return { yr, rows, totals };
+}
+function openHpYears(){ evShow('hpyears'); renderHpYears(); }
+function renderHpYears(){
+  const yrs = [...new Set([...hpYearsWithData(), hpCurrentHolidayYear()])].sort((a,b)=>b-a);
+  document.getElementById('hpr-years-tbody').innerHTML = yrs.map(y=>{
+    const s = hpYearSummary(y);
+    return `<tr>
+      <td style="font-weight:700;cursor:pointer" onclick="openHpYear(${y})">${hpYearLabel(y)}${y===hpCurrentHolidayYear()?' <span style="color:var(--green);font-size:11px">(current)</span>':''}</td>
+      <td style="text-align:center">${s.rows.length}</td>
+      <td style="text-align:center">${s.totals.weeks}</td>
+      <td style="text-align:right;font-weight:700">${fmt2(s.totals.pay)}</td>
+      <td style="text-align:right">${fmt2(s.totals.could)}</td>
+      <td style="text-align:right;color:var(--red)">${fmt2(s.totals.lost)}</td>
+      <td style="white-space:nowrap;text-align:right"><button class="btn btn-outline btn-sm" onclick="openHpYear(${y})">Open</button> <button class="btn btn-outline btn-sm" onclick="printHpYearReport(${y})">🖨 Year report</button></td>
+    </tr>`;
+  }).join('');
+}
+function openHpYear(yr){
+  hprYear = yr;
+  const s = hpYearSummary(yr);
+  document.getElementById('rep-hpyear-card').innerHTML = `
+    <div class="card-header">
+      <div><h2>Holiday year ${hpYearLabel(yr)}</h2>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px">${s.rows.length} employees · ${s.totals.weeks} weeks · Holiday Pay <b>${fmt2(s.totals.pay)}</b> · Could have received ${fmt2(s.totals.could)} · Lost to absence <span style="color:var(--red)">${fmt2(s.totals.lost)}</span></div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-outline btn-sm" onclick="openHpYears()">← All years</button>
+        <button class="btn btn-outline btn-sm" onclick="printHpYearReport(${yr})">🖨 Year report</button>
+        <button class="btn btn-primary btn-sm" onclick="printHpAllStatements(${yr})">🖨 Print all ${s.rows.length} statements</button>
+      </div>
+    </div>
+    <div class="search-row" style="padding:10px 18px;border-bottom:1px solid var(--border)">
+      <input type="text" id="hpr-search" placeholder="Search name or emp no…" oninput="renderHpYearRows()">
+    </div>
+    <div class="card-body tbl-wrap">
+      <table>
+        <thead><tr><th>Emp No.</th><th>Name</th><th style="text-align:center">Weeks</th><th style="text-align:right">Holiday Pay</th><th style="text-align:right">Could have received</th><th style="text-align:right">Lost to absence</th><th></th></tr></thead>
+        <tbody id="hpr-tbody"></tbody>
+      </table>
+    </div>`;
+  evShow('hpyear');
+  renderHpYearRows();
+  window.scrollTo(0,0);
+}
+function renderHpYearRows(){
+  const q = (document.getElementById('hpr-search').value||'').trim().toLowerCase();
+  const s = hpYearSummary(hprYear);
+  const rows = q ? s.rows.filter(r=>`${r.empNo} ${r.name}`.toLowerCase().includes(q)) : s.rows;
+  document.getElementById('hpr-tbody').innerHTML = rows.length ? rows.map(r=>`<tr>
+    <td class="emp-no">${noteEsc(r.empNo)}</td>
+    <td>${r.e ? noteEsc(r.name) : `<span style="color:var(--muted)">${noteEsc(r.name)}</span>`}</td>
+    <td style="text-align:center">${r.weeks}</td>
+    <td style="text-align:right;font-weight:700">${fmt2(r.pay)}</td>
+    <td style="text-align:right">${fmt2(r.could)}</td>
+    <td style="text-align:right;color:var(--red)">${fmt2(r.lost)}</td>
+    <td><button class="btn btn-outline btn-sm" onclick="printHolidayPayReport('${r.empNo}',${hprYear})">🖨 Statement</button></td>
+  </tr>`).join('') : '<tr><td colspan="7" class="empty"><div class="ico">🏖️</div>No holiday pay records found</td></tr>';
+}
+// Every employee's statement for the year, one per page, in a single print.
+function printHpAllStatements(yr){
+  const s = hpYearSummary(yr);
+  if (!s.rows.length) { showToast('No statements to print for this year', false); return; }
+  document.getElementById('hp-print').innerHTML = s.rows.map(r=>`<div class="hp-batch">${hpStatementHtml(r.empNo, yr)}</div>`).join('');
+  setTimeout(()=>window.print(), 400);
+}
+// One-page-style summary of the whole year: every employee plus totals.
+function printHpYearReport(yr){
+  const s = hpYearSummary(yr);
+  const logoImg = document.querySelector('header img');
+  const logoSrc = logoImg ? logoImg.src : '';
+  const t = s.totals;
+  document.getElementById('hp-print').innerHTML = `
+    <div class="hp-page">
+      <img class="hp-logo" src="${logoSrc}" alt="elmo's Furniture">
+      <div class="hp-h1">Holiday Pay Report</div>
+      <div class="hp-sub">Holiday year: ${hpYearLabel(yr)}<br>${s.rows.length} employees · ${t.weeks} weeks · printed ${fmtDate(new Date().toISOString().slice(0,10))}</div>
+      ${s.rows.length ? `
+      <table class="hp-table">
+        <thead><tr><th>Emp No.</th><th>Name</th><th class="num">Weeks</th><th class="num">Holiday Pay</th><th class="num">Could have received</th><th class="num">Lost to absence</th></tr></thead>
+        <tbody>${s.rows.map(r=>`<tr><td>${noteEsc(r.empNo)}</td><td>${noteEsc(r.name)}</td><td class="num">${r.weeks}</td><td class="num">${fmt2(r.pay)}</td><td class="num">${fmt2(r.could)}</td><td class="num">${fmt2(r.lost)}</td></tr>`).join('')}</tbody>
+        <tfoot><tr class="hp-total-row"><td colspan="2">Total (${s.rows.length} employees)</td><td class="num">${t.weeks}</td><td class="num">${fmt2(t.pay)}</td><td class="num">${fmt2(t.could)}</td><td class="num">${fmt2(t.lost)}</td></tr></tfoot>
+      </table>
+      <table class="hp-table" style="width:auto;margin:18px 0 0 auto;min-width:340px">
+        <tr><td>Temporary period total</td><td class="num">${fmt2(t.tempPay)}</td></tr>
+        <tr><td>Permanent period total</td><td class="num">${fmt2(t.permPay)}</td></tr>
+      </table>
+      <div class="hp-grand-total">Holiday Pay Total: ${fmt2(t.pay)}</div>` : '<p class="hp-sub">No holiday pay records for this holiday year.</p>'}
+    </div>`;
   setTimeout(()=>window.print(), 150);
 }
 
@@ -3557,8 +3700,8 @@ function evCompute(r){
 }
 function evShow(which){
   document.getElementById('tab-reports').querySelector('.card').style.display = which==='home' ? '' : 'none';
-  document.getElementById('rep-evlist-card').style.display = which==='list' ? '' : 'none';
-  document.getElementById('rep-evform-card').style.display = which==='form' ? '' : 'none';
+  [['list','rep-evlist-card'],['form','rep-evform-card'],['hpyears','rep-hpyears-card'],['hpyear','rep-hpyear-card']]
+    .forEach(([k,id])=>{ document.getElementById(id).style.display = which===k ? '' : 'none'; });
 }
 function showReportsHome(){ evCurrentEmp = null; evViewId = null; evShow('home'); }
 function openEvalList(){ evShow('list'); renderEvalList(); }
