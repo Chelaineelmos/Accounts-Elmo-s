@@ -535,7 +535,7 @@ body.view-only .editor-only{display:none!important}
       <div class="search-row">
         <input type="text" id="sav-search" placeholder="Search name or emp no…" oninput="renderSavings()">
         <button class="btn btn-success btn-sm editor-only" onclick="openModal('modal-sav')">+ Add Savings</button>
-        <button class="btn btn-success btn-sm editor-only" title="Import 'Finalised savings transactions' export — adds new transactions only, no duplicates" onclick="document.getElementById('fi-savings').click()">⬆ Import Savings</button>
+        <button class="btn btn-success btn-sm editor-only" title="Import the payroll 'Savings detail' sheet — checks every balance and fixes the ones that are wrong" onclick="document.getElementById('fi-savings').click()">⬆ Import Savings</button>
         <span id="import-badge-savings" style="font-size:11px;color:var(--muted);align-self:center;white-space:nowrap"></span>
       </div>
     </div>
@@ -768,6 +768,17 @@ body.view-only .editor-only{display:none!important}
 </div>
 </main>
 
+
+<div class="modal-bg" id="modal-sav-sync">
+<div class="modal" style="max-width:1000px;width:96%">
+  <div class="modal-head"><h3>Savings import — check before applying</h3><button onclick="closeModal('modal-sav-sync')">✕</button></div>
+  <div class="modal-body" id="sav-sync-body" style="overflow-x:auto"></div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modal-sav-sync')">Cancel</button>
+    <button class="btn btn-outline" id="sav-sync-backup" onclick="savSyncBackup()">⬇ Save a copy of what will be replaced</button>
+    <button class="btn btn-success" id="sav-sync-apply" onclick="applySavSync()">Fix balances</button>
+  </div>
+</div></div>
 
 <div class="modal-bg" id="modal-hp-breakdown">
 <div class="modal" style="max-width:1180px;width:96%">
@@ -4885,7 +4896,190 @@ async function importLeaveFile(input) {
   });
 }
 
-// ── SAVINGS IMPORT ────────────────────────────────────────────────────────────
+// ── SAVINGS IMPORT: payroll "Savings detail" sheet ─────────────────────────────
+// Columns: Employee number | Surname | Name | Date | Pay slip | Description | Deposit | Withdrawal | Balance
+// Every line carries the payroll's own running Balance, so the last line of each employee is the
+// balance payroll says is right. The import compares that to the app for every employee:
+//   • balance already matches  → left exactly as it is
+//   • balance is different     → shown in a preview; on "Fix" that employee's savings lines are replaced
+//                                 by the payroll lines (so the app ends up equal to payroll)
+// Employee numbers are always read as TEXT, so numbers that start with a zero (0662) stay as they are.
+let savSyncPlan = null;
+async function importSavingsFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  input.value = '';
+  if (!/\.csv$/i.test(file.name) && typeof XLSX!=='undefined') {
+    const raw = await new Promise(res=>{
+      const rd = new FileReader();
+      rd.onload = e => { try { const wb = XLSX.read(e.target.result,{type:'binary'}); res(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:true,defval:null})); } catch(err){ res(null); } };
+      rd.onerror = () => res(null);
+      rd.readAsBinaryString(file);
+    });
+    const map = raw && savDetailColumns(raw);
+    if (map) { savDetailPreview(raw, map, file.name); return; }
+  }
+  importSavingsLegacy(file);   // the older "Finalised savings transactions" export
+}
+function savDetailColumns(raw){
+  for (let i=0; i<Math.min(8, raw.length); i++) {
+    const h = (raw[i]||[]).map(x=>String(x==null?'':x).trim().toLowerCase());
+    const f = (...names) => h.findIndex(x=>names.includes(x));
+    const c = { emp:f('employee number','employee no','employee no.','emp no'), surname:f('surname'), name:f('name'), date:f('date'),
+                slip:f('pay slip','payslip'), desc:f('description'), dep:f('deposit'), wd:f('withdrawal'), bal:f('balance') };
+    if (c.emp>=0 && c.date>=0 && c.dep>=0 && c.wd>=0 && c.bal>=0) return { hdr:i, c };
+  }
+  return null;
+}
+function savNum(v){ if (typeof v==='number') return v; const n = parseFloat(String(v==null?'':v).replace(/[R\s,]/g,'')); return isNaN(n) ? 0 : n; }
+function savIso(v){
+  if (v==null || v==='') return '';
+  if (typeof v==='number') { if (v<20000 || v>90000) return ''; return new Date(Date.UTC(1899,11,30) + Math.round(v)*86400000).toISOString().slice(0,10); }
+  if (v instanceof Date) { const d = new Date(v.getTime()+12*3600000); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+  const t = String(v).trim(); let m;
+  if ((m = t.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/))) return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+  if ((m = t.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/))) return `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;   // day/month/year
+  return '';
+}
+// The employee number as the app stores it (zero-padded form kept exactly; collisions like 663 / 0663 settled by surname).
+function savCanonEmpNo(raw, surname){
+  const resolved = resolveEmpNo(raw, surname);
+  const e = findEmp(resolved) || (/^0/.test(resolved) ? findEmp(resolved.replace(/^0+/,'')) : null);
+  return e ? e.empNo : resolved;
+}
+function savSameSurname(a, b){
+  const n = x => String(x||'').toUpperCase().replace(/[^A-Z]/g,'');
+  a = n(a); b = n(b);
+  return !a || !b || a===b || a.startsWith(b) || b.startsWith(a);
+}
+const savC = v => Math.round(v*100);
+function savDetailPreview(raw, map, fileName){
+  const { hdr, c } = map;
+  const byEmp = new Map();
+  let lines = 0, skipped = 0, lastDate = '';
+  raw.slice(hdr+1).forEach(r=>{
+    const empRaw = String(r[c.emp]==null ? '' : r[c.emp]).trim();
+    const date = savIso(r[c.date]);
+    if (!empRaw || !date) { if (empRaw || date) skipped++; return; }
+    const dep = savNum(r[c.dep]), wd = savNum(r[c.wd]);
+    if (!dep && !wd) { skipped++; return; }
+    lines++; if (date>lastDate) lastDate = date;
+    if (!byEmp.has(empRaw)) byEmp.set(empRaw, { raw:empRaw, surname:String(r[c.surname]==null?'':r[c.surname]).trim(), given:String(r[c.name]==null?'':r[c.name]).trim(), rows:[] });
+    const slip = c.slip>=0 && r[c.slip]!=null && r[c.slip]!=='' ? String(r[c.slip]).trim() : '';
+    const desc = c.desc>=0 ? String(r[c.desc]==null?'':r[c.desc]).trim() : '';
+    byEmp.get(empRaw).rows.push({ date, dep, wd, bal: savNum(r[c.bal]), notes: [desc, slip?`Payslip ${slip}`:''].filter(Boolean).join(' · ') });
+  });
+  const plan = { fileName, lines, skipped, lastDate, employees:byEmp.size, match:0, fix:[], warn:[], appOnly:[] };
+  const covered = new Set();
+  byEmp.forEach(g=>{
+    g.rows = g.rows.map((x,i)=>({x,i})).sort((a,b)=>a.x.date.localeCompare(b.x.date) || a.i-b.i).map(o=>o.x);
+    const empNo = savCanonEmpNo(g.raw, g.surname);
+    const e = findEmp(empNo);
+    const nos = empNosToMatch(empNo);
+    nos.forEach(n=>covered.add(n));
+    const name = e ? `${e.surname} ${e.initials}` : `${g.surname} ${g.given}`.trim();
+    const payBal = savC(g.rows[g.rows.length-1].bal);
+    const sumDW = g.rows.reduce((t,x)=>t+savC(x.dep)-savC(x.wd),0);
+    const old = db.sav.filter(r=>nos.includes(String(r.empNo).trim()));
+    const appBal = old.reduce((t,r)=>t+(r.type==='deposit'?1:-1)*savC(Number(r.amount)),0);
+    const item = { raw:g.raw, empNo, e, name, onList:!!e, payBal, appBal, old, rows:g.rows };
+    if (e && !savSameSurname(e.surname, g.surname)) { item.sheetSurname = g.surname; plan.warn.push(item); return; }
+    if (appBal===payBal) { plan.match++; return; }
+    // payroll lines → app records (keeps the payroll balance exactly; adds an opening line if the sheet doesn't start at zero)
+    const recs = g.rows.map(x=>({ date:x.date, type:x.dep?'deposit':'withdrawal', amount:Math.round((x.dep||x.wd)*100)/100, notes:x.notes }));
+    const gap = payBal - sumDW;
+    if (Math.abs(gap)>=1) recs.unshift({ date:g.rows[0].date, type:gap>0?'deposit':'withdrawal', amount:Math.abs(gap)/100, notes:'Opening balance per payroll' });
+    item.recs = recs;
+    plan.fix.push(item);
+  });
+  // Savings in the app for staff who are not in this sheet at all (informational — never touched)
+  const seen = new Set();
+  db.sav.forEach(r=>{
+    const n = String(r.empNo).trim();
+    if (covered.has(n) || seen.has(n) || !isCurrentEmployee(n)) return;
+    seen.add(n);
+    const bal = savBalance(n);
+    if (Math.abs(bal)>=0.005) plan.appOnly.push({ empNo:n, name:empName(n), bal });
+  });
+  plan.fix.sort((a,b)=>a.name.localeCompare(b.name)); plan.warn.sort((a,b)=>a.name.localeCompare(b.name)); plan.appOnly.sort((a,b)=>a.name.localeCompare(b.name));
+  savSyncPlan = plan;
+  renderSavSync();
+  openModal('modal-sav-sync');
+}
+function renderSavSync(){
+  const p = savSyncPlan; if (!p) return;
+  const R = cents => fmt2(cents/100);
+  let h = `<div style="font-size:13px;margin-bottom:10px"><b>${noteEsc(p.fileName)}</b> — ${p.lines.toLocaleString()} savings lines for ${p.employees} employees, up to ${fmtDate(p.lastDate)}.</div>`;
+  h += `<div style="background:#EAF6EA;border:1px solid #bfe0bf;border-radius:8px;padding:8px 12px;font-size:13px;margin-bottom:10px">✅ <b>${p.match}</b> employee${p.match===1?'':'s'} already match payroll — nothing will change for them.</div>`;
+  if (p.fix.length) {
+    h += `<div style="background:#FFF4E0;border:1px solid #f0d49a;border-radius:8px;padding:8px 12px;font-size:13px;margin-bottom:8px">⚠ <b>${p.fix.length}</b> employee${p.fix.length===1?'':'s'} ${p.fix.length===1?'has':'have'} a different balance to payroll. Pressing <b>Fix</b> replaces their savings lines in the app with the payroll lines, so the balance equals payroll's.</div>
+    <div style="overflow-x:auto"><table style="font-size:12px"><thead><tr><th>Emp No.</th><th>Name</th><th style="text-align:right">App balance now</th><th style="text-align:right">Payroll balance</th><th style="text-align:right">Difference</th><th style="text-align:center">Old lines removed</th><th style="text-align:center">Payroll lines added</th></tr></thead><tbody>${
+      p.fix.map(f=>{ const d = f.payBal-f.appBal; return `<tr><td class="emp-no">${noteEsc(f.empNo)}</td><td>${noteEsc(f.name)}${f.onList?'':' <span style="color:var(--muted)">(not on employee list)</span>'}</td><td style="text-align:right">${R(f.appBal)}</td><td style="text-align:right;font-weight:700">${R(f.payBal)}</td><td style="text-align:right;color:${d<0?'var(--red)':'var(--green)'}">${d>0?'+':''}${R(d)}</td><td style="text-align:center">${f.old.length}</td><td style="text-align:center">${f.recs.length}</td></tr>`; }).join('')}</tbody></table></div>`;
+  } else {
+    h += `<div style="font-size:13px;margin-bottom:8px">Nothing to fix — every balance in the app equals payroll.</div>`;
+  }
+  if (p.warn.length) {
+    h += `<div style="background:#FDECEC;border:1px solid #f0b4b4;border-radius:8px;padding:8px 12px;font-size:13px;margin:12px 0 6px">⛔ <b>${p.warn.length}</b> employee number${p.warn.length===1?' points':'s point'} to a <b>different surname</b> in the app. They have been left alone — please check them:</div>
+    <div style="font-size:12px">${p.warn.map(f=>`Emp ${noteEsc(f.raw)}: payroll says <b>${noteEsc(f.sheetSurname)}</b>, the app has <b>${noteEsc(f.e.surname)}</b>`).join('<br>')}</div>`;
+  }
+  if (p.appOnly.length) {
+    h += `<details style="margin-top:12px;font-size:12px"><summary style="cursor:pointer;font-weight:600">${p.appOnly.length} employee${p.appOnly.length===1?'':'s'} ${p.appOnly.length===1?'has':'have'} savings in the app but are not in this sheet (left untouched)</summary><div style="margin-top:6px">${p.appOnly.map(a=>`${noteEsc(a.empNo)} — ${noteEsc(a.name)}: ${fmt2(a.bal)}`).join('<br>')}</div></details>`;
+  }
+  if (p.skipped) h += `<div style="font-size:11px;color:var(--muted);margin-top:10px">${p.skipped} blank or zero lines in the sheet were ignored.</div>`;
+  document.getElementById('sav-sync-body').innerHTML = h;
+  const b = document.getElementById('sav-sync-apply');
+  b.textContent = p.fix.length ? `Fix ${p.fix.length} balance${p.fix.length===1?'':'s'}` : 'Nothing to fix';
+  b.disabled = !p.fix.length;
+  document.getElementById('sav-sync-backup').style.display = p.fix.length ? '' : 'none';
+}
+// A spreadsheet copy of what is about to be replaced, in case it is ever needed.
+function savSyncBackup(){
+  const p = savSyncPlan; if (!p || typeof XLSX==='undefined') return;
+  const rows = [['Emp No.','Name','Date','Type','Amount','Notes']];
+  p.fix.forEach(f=>f.old.slice().sort((a,b)=>String(a.date).localeCompare(String(b.date))).forEach(r=>rows.push([f.empNo, f.name, r.date, r.type, Number(r.amount), r.notes||''])));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Savings before fix');
+  XLSX.writeFile(wb, `savings_before_fix_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+async function applySavSync(){
+  const p = savSyncPlan; if (!p || !p.fix.length) return;
+  const stamp = uid(); let n = 0;
+  const fresh = [];
+  p.fix.forEach(f=>f.recs.forEach(r=>fresh.push({ id: `${stamp}${(n++).toString(36)}`, empNo:f.empNo, date:r.date, type:r.type, amount:r.amount, notes:r.notes })));
+  const oldIds = p.fix.flatMap(f=>f.old.map(r=>r.id));
+  const insertedIds = []; let deletedAny = false;
+  closeModal('modal-sav-sync');
+  showLoader(`Fixing savings… (0 / ${fresh.length})`);
+  try {
+    for (let i=0; i<fresh.length; i+=200) {                       // 1) add the payroll lines
+      const batch = fresh.slice(i,i+200);
+      await supa('POST','savings', batch.map(r=>({ id:r.id, emp_no:r.empNo, date:r.date, type:r.type, amount:r.amount, notes:r.notes })));
+      batch.forEach(r=>insertedIds.push(r.id));
+      setLoaderPct(Math.round((i+batch.length)/fresh.length*80));
+    }
+    for (let i=0; i<oldIds.length; i+=40) {                       // 2) remove the old lines they replace
+      const ids = oldIds.slice(i,i+40).map(x=>encodeURIComponent(String(x))).join(',');
+      await supa('DELETE','savings',null,`id=in.(${ids})`);
+      deletedAny = true;
+      setLoaderPct(80+Math.round((i+40)/Math.max(oldIds.length,1)*20));
+    }
+  } catch (err) {
+    let removedAdds = false;            // undo the lines added in step 1 so nothing is double-counted (only safe if no old line was removed yet)
+    if (!deletedAny) try { for (let i=0; i<insertedIds.length; i+=40) await supa('DELETE','savings',null,`id=in.(${insertedIds.slice(i,i+40).join(',')})`); removedAdds = true; } catch(e2) {}
+    hideLoader();
+    showToast('Savings fix stopped: '+err.message+(removedAdds?' — nothing was changed. Please try again.':' — please run the import again to finish.'), false);
+    return;
+  }
+  const gone = new Set(oldIds);
+  db.sav = db.sav.filter(r=>!gone.has(r.id)).concat(fresh);
+  hideLoader();
+  showToast(`✅ ${p.fix.length} savings balance${p.fix.length===1?'':'s'} fixed — now equal to payroll`);
+  recordImport('savings');
+  savSyncPlan = null;
+  renderSavings();
+}
+
+// ── SAVINGS IMPORT (older "Finalised savings transactions" export) ────────────
 // "Finalised savings transactions" export (.xls), no header row.
 // Col 0: "EmpNo: SURNAME Given Names"   Col 1: Date   Col 2: Deposit
 // Col 3: Withdrawal   Col 4: Balance (ignored, recomputed by app)
@@ -4894,11 +5088,7 @@ async function importLeaveFile(input) {
 // each import only inserts rows whose ref number isn't already stored (kept in
 // notes as "Ref <n>"). Existing records — imported or manually added — are never
 // touched or deleted. Safe to run weekly, monthly, or with overlapping date ranges.
-async function importSavingsFile(input) {
-  const file = input.files[0];
-  if (!file) return;
-  input.value = '';
-
+async function importSavingsLegacy(file) {
   readFileToRows(file, async rows => {
     // Data rows look like: "691: BEJANA Sphiwo" in col 0. Title/blank rows won't match.
     const dataRows = rows.filter(r => r.length >= 4 && /^\d+\s*:/.test(String(r[0] || '').trim()));
