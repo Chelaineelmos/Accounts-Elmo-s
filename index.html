@@ -512,6 +512,7 @@ body.view-only .editor-only{display:none!important}
           <option value="">All types</option>
           <option>Sick leave</option><option>Unpaid</option><option>Family responsibility</option>
         </select>
+        <button class="btn btn-outline btn-sm" title="Look through every leave record for mistakes" onclick="openLeaveCheck()">🔎 Check records</button>
         <button class="btn btn-primary btn-sm editor-only" onclick="openModal('modal-leave')">+ Add Record</button>
         <button class="btn btn-outline btn-sm editor-only" onclick="openModal('modal-bulk')">✎ Paste Data</button>
         <button class="btn btn-primary btn-sm editor-only" title="Import your weekly .xls export from the leave system" onclick="document.getElementById('fi-leave').click()">⬆ Import Leave File (.xls)</button>
@@ -768,6 +769,16 @@ body.view-only .editor-only{display:none!important}
 </div>
 </main>
 
+
+<div class="modal-bg" id="modal-leave-check">
+<div class="modal" style="max-width:1100px;width:96%">
+  <div class="modal-head"><h3>Leave records check</h3><button onclick="closeModal('modal-leave-check')">✕</button></div>
+  <div class="modal-body" id="leave-check-body" style="overflow-x:auto"></div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modal-leave-check')">Close</button>
+    <button class="btn btn-primary" onclick="exportLeaveCheck()">⬇ Save list to Excel</button>
+  </div>
+</div></div>
 
 <div class="modal-bg" id="modal-sav-sync">
 <div class="modal" style="max-width:1000px;width:96%">
@@ -1586,10 +1597,25 @@ function empDisplayName(empNo){
   return e?e.displayName||`${e.surname} ${e.initials}`:empNo;
 }
 
+// Leave days = WORKING days only (Monday – Friday). Saturdays and Sundays never count.
 function daysBetween(s,e){
   if(!s||!e)return 0;
-  const ms=new Date(e)-new Date(s);
-  return Math.max(0,Math.round(ms/86400000)+1);
+  s=String(s).slice(0,10); e=String(e).slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(s)||!/^\d{4}-\d{2}-\d{2}$/.test(e)){        // not a plain date — fall back to calendar days
+    const ms=new Date(e)-new Date(s); return isNaN(ms)?0:Math.max(0,Math.round(ms/86400000)+1);
+  }
+  const a=new Date(s+'T00:00:00Z'), b=new Date(e+'T00:00:00Z');
+  if(isNaN(a)||isNaN(b)||b<a)return 0;
+  const total=Math.round((b-a)/86400000)+1, weeks=Math.floor(total/7), rem=total%7, d0=a.getUTCDay();
+  let n=weeks*5;
+  for(let i=0;i<rem;i++){ const dow=(d0+i)%7; if(dow!==0&&dow!==6)n++; }
+  return n;
+}
+// Calendar days (what the app used to count) — only used by the leave check to show what changed.
+function daysCalendar(s,e){
+  if(!s||!e)return 0;
+  const ms=new Date(String(e).slice(0,10)+'T00:00:00Z')-new Date(String(s).slice(0,10)+'T00:00:00Z');
+  return isNaN(ms)?0:Math.max(0,Math.round(ms/86400000)+1);
 }
 function fmtDate(d){
   if(!d)return'';
@@ -2196,6 +2222,134 @@ async function deleteEmp(id){
     db.emp=db.emp.filter(e=>e.id!==id);
     renderEmployees();showToast('Employee removed');
   }catch(e){showToast('Error: '+e.message,false);}
+}
+
+// ── South African public holidays (used only by the leave check, as a "worth a look") ──
+function zaPublicHolidays(year){
+  const out = {};
+  const iso = (y,m,d)=>`${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  const fixed = [[1,1,"New Year's Day"],[3,21,'Human Rights Day'],[4,27,'Freedom Day'],[5,1,"Workers' Day"],[6,16,'Youth Day'],[8,9,"National Women's Day"],
+                 [9,24,'Heritage Day'],[12,16,'Day of Reconciliation'],[12,25,'Christmas Day'],[12,26,'Day of Goodwill']];
+  fixed.forEach(([m,d,n])=>{ out[iso(year,m,d)] = n; });
+  // a holiday that falls on a Sunday is observed on the next day that is not already a holiday
+  fixed.forEach(([m,d,n])=>{
+    if (new Date(Date.UTC(year,m-1,d)).getUTCDay()!==0) return;
+    let t = Date.UTC(year,m-1,d+1), x;
+    for (;;) { x = new Date(t); const k = iso(x.getUTCFullYear(),x.getUTCMonth()+1,x.getUTCDate()); if (!out[k]) { out[k] = n+' (observed)'; break; } t += 86400000; }
+  });
+  // Easter (Gregorian)
+  const a=year%19,b=Math.floor(year/100),c=year%100,d=Math.floor(b/4),e=b%4,f=Math.floor((b+8)/25),g=Math.floor((b-f+1)/3),
+        h=(19*a+b-d-g+15)%30,i=Math.floor(c/4),k=c%4,l=(32+2*e+2*i-h-k)%7,m=Math.floor((a+11*h+22*l)/451),
+        mo=Math.floor((h+l-7*m+114)/31),da=((h+l-7*m+114)%31)+1;
+  const easter = Date.UTC(year,mo-1,da);
+  const fmt = t => { const x=new Date(t); return iso(x.getUTCFullYear(),x.getUTCMonth()+1,x.getUTCDate()); };
+  out[fmt(easter-2*86400000)] = 'Good Friday'; out[fmt(easter+86400000)] = 'Family Day';
+  return out;
+}
+function leaveHolidaysIn(s,e){
+  const hits = [];
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s||'') || !/^\d{4}-\d{2}-\d{2}$/.test(e||'') || e<s) return hits;
+  const y0 = Number(s.slice(0,4)), y1 = Number(e.slice(0,4));
+  if (y1-y0>2) return hits;
+  for (let y=y0; y<=y1; y++) { const hol = zaPublicHolidays(y); Object.keys(hol).sort().forEach(d=>{
+    if (d>=s && d<=e && ![0,6].includes(new Date(d+'T00:00:00Z').getUTCDay())) hits.push(`${d.slice(8)}/${d.slice(5,7)} ${hol[d]}`); }); }
+  return hits;
+}
+
+// ── Leave check: looks through every leave record for things that are probably wrong ──
+const LEAVE_STD_TYPES = ['Sick leave','Unpaid','Family responsibility','Maternity (unpaid)','Other'];
+function leaveIssues(){
+  const sec = {
+    bad:   { level:'error', title:'Missing or impossible dates',                        help:'The end date is before the start date, or a date is missing. These count as 0 days.', items:[] },
+    wkend: { level:'error', title:'Only on a Saturday / Sunday (0 working days)',        help:'Your work days are Monday to Friday, so these count as 0 days. Probably a wrong date.', items:[] },
+    dupe:  { level:'error', title:'Exact duplicates',                                    help:'The same employee, type and dates appear more than once, so the days are counted twice. Delete the extra line.', items:[] },
+    type:  { level:'error', title:'Leave type spelled differently',                      help:'These do not match "Sick leave", "Unpaid" or "Family responsibility" exactly, so they are left out of those totals.', items:[] },
+    over:  { level:'warn',  title:'Overlapping leave for the same employee',             help:'Two records cover the same working day(s). Check that the days are not counted twice.', items:[] },
+    long:  { level:'warn',  title:'Unusually long (more than 10 working days)',          help:'Check the dates, e.g. a wrong month or year.', items:[] },
+    date:  { level:'warn',  title:'Dates that look odd',                                help:'Before the employee started, a long time ago, or far in the future.', items:[] },
+    hol:   { level:'info',  title:'Includes a public holiday',                           help:'The public holiday is counted as a leave day (it is a Monday – Friday). Tell me if public holidays should not count.', items:[] },
+    gone:  { level:'info',  title:'Employee not on the current employee list',          help:'Normal for people who have left.', items:[] },
+    chg:   { level:'info',  title:'Days now counted differently (weekends removed)',     help:'These records run across a weekend. The old count included Saturdays and Sundays.', items:[] },
+    other: { level:'info',  title:'Other leave types (not counted as sick / family / unpaid)', help:'Shown so you can confirm these are meant to be separate.', items:[] }
+  };
+  const today = new Date().toISOString().slice(0,10);
+  const horizon = new Date(Date.now()+90*86400000).toISOString().slice(0,10);
+  const add = (k,r,note)=>sec[k].items.push({ r, note });
+  const canon = r=>{ const e=findEmp(String(r.empNo).trim()); return e?e.empNo:String(r.empNo).trim(); };
+  const seen = new Map(), byEmp = {};
+  db.leave.forEach(r=>{
+    const sd = r.startDate||'', ed = r.endDate||'';
+    const valid = /^\d{4}-\d{2}-\d{2}$/.test(sd) && /^\d{4}-\d{2}-\d{2}$/.test(ed);
+    const e = findEmp(String(r.empNo).trim());
+    const wd = valid ? daysBetween(sd,ed) : 0, cal = valid ? daysCalendar(sd,ed) : 0;
+    const t = String(r.leaveType||'');
+    if (!valid || ed<sd) { add('bad',r,!valid?'date missing or not a valid date':'end date is before the start date'); return; }
+    if (!wd) add('wkend',r,'falls only on a weekend');
+    const key = `${canon(r)}|${t}|${sd}|${ed}`;
+    if (seen.has(key)) add('dupe',r,'same as another record'); else seen.set(key,r);
+    const std = LEAVE_STD_TYPES.find(x=>x===t);
+    if (!std) {
+      const near = ['Sick leave','Unpaid','Family responsibility'].find(x=>x.toLowerCase()===t.trim().toLowerCase().replace(/\s+/g,' '));
+      if (near) add('type',r,`spelled "${t}" — should be "${near}"`); else add('other',r,t||'(no type)');
+    }
+    if (wd>10 && !/maternity|other/i.test(t)) add('long',r,`${wd} working days`);
+    const odd = [];
+    if (e && e.startDate && sd<e.startDate) odd.push(`starts before the employee started (${fmtDate(e.startDate)})`);
+    if (sd<'2015-01-01') odd.push('start date is before 2015');
+    if (sd>horizon) odd.push('starts more than 90 days from now');
+    if (ed>horizon && sd<=horizon) odd.push('ends more than 90 days from now');
+    if (odd.length) add('date',r,odd.join('; '));
+    const hol = leaveHolidaysIn(sd,ed);
+    if (hol.length && wd>=1 && !/maternity/i.test(t)) add('hol',r,hol.join(', '));
+    if (!e) add('gone',r,'');
+    if (cal!==wd && wd>0) add('chg',r,`was ${cal} calendar days, now ${wd} working days`);
+    (byEmp[canon(r)] = byEmp[canon(r)]||[]).push(r);
+  });
+  // overlapping working days between two different records of one employee
+  Object.values(byEmp).forEach(list=>{
+    const rs = list.filter(r=>daysBetween(r.startDate,r.endDate)>0).sort((a,b)=>a.startDate.localeCompare(b.startDate)||a.endDate.localeCompare(b.endDate));
+    for (let i=0;i<rs.length;i++) for (let j=i+1;j<rs.length;j++) {
+      if (rs[j].startDate>rs[i].endDate) break;
+      if (rs[i].startDate===rs[j].startDate && rs[i].endDate===rs[j].endDate && rs[i].leaveType===rs[j].leaveType) continue;   // exact duplicate — reported above
+      const os = rs[i].startDate>rs[j].startDate?rs[i].startDate:rs[j].startDate, oe = rs[i].endDate<rs[j].endDate?rs[i].endDate:rs[j].endDate;
+      if (daysBetween(os,oe)>0) add('over',rs[j],`overlaps ${rs[i].leaveType} ${fmtDate(rs[i].startDate)} – ${fmtDate(rs[i].endDate)} on ${daysBetween(os,oe)} working day(s)`);
+    }
+  });
+  return sec;
+}
+let leaveCheckData = null;
+function openLeaveCheck(){ leaveCheckData = leaveIssues(); renderLeaveCheck(); openModal('modal-leave-check'); }
+function renderLeaveCheck(){
+  const sec = leaveCheckData; if (!sec) return;
+  const order = ['bad','wkend','dupe','type','over','long','date','hol','chg','other','gone'];
+  const errs = order.filter(k=>sec[k].level==='error').reduce((t,k)=>t+sec[k].items.length,0);
+  const warns = order.filter(k=>sec[k].level==='warn').reduce((t,k)=>t+sec[k].items.length,0);
+  const icon = { error:'⛔', warn:'⚠', info:'ℹ️' }, bg = { error:'#FDECEC', warn:'#FFF4E0', info:'#F1F3F5' };
+  let h = `<div style="font-size:13px;margin-bottom:10px"><b>${db.leave.length}</b> leave records checked. Leave days now count <b>Monday – Friday only</b>.
+     <b style="color:${errs?'var(--red)':'var(--green)'}">${errs} likely mistake${errs===1?'':'s'}</b>, <b style="color:${warns?'var(--orange)':'var(--green)'}">${warns} to look at</b>.</div>`;
+  order.forEach(k=>{
+    const g = sec[k]; if (!g.items.length) return;
+    const rows = g.items.slice().sort((a,b)=>(findEmp(a.r.empNo)?.surname||String(a.r.empNo)).localeCompare(findEmp(b.r.empNo)?.surname||String(b.r.empNo))||String(a.r.startDate).localeCompare(String(b.r.startDate)));
+    h += `<details ${g.level!=='info'?'open':''} style="margin-bottom:10px;border:1px solid var(--border);border-radius:8px;overflow:hidden">
+      <summary style="cursor:pointer;padding:8px 12px;background:${bg[g.level]};font-weight:700;font-size:13px">${icon[g.level]} ${g.title} — ${g.items.length}</summary>
+      <div style="padding:6px 12px;font-size:12px;color:var(--muted)">${g.help}</div>
+      <div style="overflow-x:auto;max-height:300px;overflow-y:auto"><table style="font-size:12px"><thead><tr><th>Emp No.</th><th>Name</th><th>Type</th><th>Start</th><th>End</th><th>Days</th><th>What</th><th></th></tr></thead><tbody>${
+      rows.map(({r,note})=>`<tr><td class="emp-no">${noteEsc(r.empNo)}</td><td>${noteEsc(empName(r.empNo))}</td><td>${noteEsc(r.leaveType)}</td><td>${fmtDate(r.startDate)}</td><td>${fmtDate(r.endDate)}</td><td style="text-align:center;font-weight:600">${daysBetween(r.startDate,r.endDate)}</td><td style="color:var(--muted)">${noteEsc(note)}${r.remarks?` <i>· ${noteEsc(r.remarks)}</i>`:''}</td><td>${['info'].includes(g.level)?'':`<button class="btn btn-danger btn-sm editor-only" title="Delete this record" onclick="deleteLeaveFromCheck('${r.id}')">✕</button>`}</td></tr>`).join('')}</tbody></table></div></details>`;
+  });
+  if (!order.some(k=>sec[k].items.length)) h += '<div class="empty"><div class="ico">✅</div>No problems found</div>';
+  document.getElementById('leave-check-body').innerHTML = h;
+}
+async function deleteLeaveFromCheck(id){
+  if(!confirm('Delete this leave record?'))return;
+  try{ await deleteLeaveRecord(id); db.leave=db.leave.filter(r=>r.id!==id); renderLeave(); showToast('Leave record deleted'); leaveCheckData=leaveIssues(); renderLeaveCheck(); }
+  catch(e){ showToast('Error: '+e.message,false); }
+}
+function exportLeaveCheck(){
+  if (!leaveCheckData || typeof XLSX==='undefined') return;
+  const rows = [['Check','Level','Emp No.','Name','Leave type','Start','End','Working days','What','Remarks']];
+  Object.values(leaveCheckData).forEach(g=>g.items.forEach(({r,note})=>rows.push([g.title,g.level,r.empNo,empName(r.empNo),r.leaveType,r.startDate,r.endDate,daysBetween(r.startDate,r.endDate),note,r.remarks||''])));
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Leave check');
+  XLSX.writeFile(wb, `leave_check_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 
 // ════════════════════════════════════════════════════════
